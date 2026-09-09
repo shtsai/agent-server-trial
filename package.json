@@ -1,0 +1,9 @@
+{
+  "name": "agent-server-trial",
+  "private": true,
+  "workspaces": ["web", "services/agent-ts"],
+  "scripts": {
+    "dev": "npm run dev -w services/agent-ts & npm run dev -w web",
+    "build": "npm run build -w web && npm run build -w services/agent-ts"
+  }
+}
