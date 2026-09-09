@@ -1,0 +1,26 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "web": {
+      "root": "web/",
+      "bindings": [
+        { "type": "service", "service": "agent", "format": "url", "env": "AGENT_SERVICE_URL" }
+      ]
+    },
+    "agent": {
+      "root": "services/agent-ts/",
+      "runtime": "container",
+      "entrypoint": "Dockerfile.vercel",
+      "bindings": [
+        { "type": "service", "service": "doc", "format": "url", "env": "DOC_SERVICE_URL" }
+      ]
+    },
+    "doc": {
+      "root": "services/doc-py/",
+      "runtime": "container",
+      "entrypoint": "Dockerfile.vercel"
+    }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": { "service": "web" } }],
+  "crons": [{ "path": "/api/drain", "schedule": "* * * * *" }]
+}
