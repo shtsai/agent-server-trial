@@ -20,18 +20,26 @@ db/schema.sql        Postgres: run + run_event
 
 **One Neon Postgres database serves both deployments**, so the only variable is the platform.
 
-## The two deployments
+## The four deployments
 
-| | Vercel Services | Railway |
-|---|---|---|
-| Frontend | `web` service | `web` service |
-| Agent | `agent` service, **no public rewrite** (internal) | `agent` service, no public domain |
-| Python | `doc` service, internal, reached via **binding** | `doc` service, via `*.railway.internal` |
-| Work is driven by | `POST /drain` from Vercel Cron | an always-on poll loop |
-| Deploys | one atomic deployment | ordered by reference variables |
+Same code, one Neon Postgres, four platforms. `deploy/` has a page each.
 
-The asymmetry in that "driven by" row is the whole experiment: a Vercel container scales down after
-**5 minutes without traffic**, so a poll loop cannot exist there. Railway's can.
+| | Vercel Services | Railway | Cloud Run | Azure Container Apps |
+|---|---|---|---|---|
+| Agent reachable publicly? | no rewrite | no domain | `--no-allow-unauthenticated` | `--ingress internal` |
+| Work driven by | `POST /drain` from Cron | always-on poll loop | poll loop, `--no-cpu-throttling` + `--min-instances=1` | always-on replica, or a KEDA queue trigger |
+| Scales to zero | ✓ | ✗ if no ingress | ✓ per service, not the worker | ✓, and KEDA can wake it |
+| Long jobs | 30 min | unbounded | 60 min + Jobs | jobs |
+| Deploys | one atomic deployment | ordered by reference variables | per service | per app |
+
+**The "driven by" row is the whole experiment.** A Vercel container scales down after 5 minutes
+without traffic, so a poll loop cannot exist there at all. The others can run one — but on every
+single one of them, doing so means giving up scale-to-zero for that service. Azure's KEDA queue
+trigger is the only escape on the list, because the wake signal lives *outside* the app.
+
+**And a worker still has to listen.** Cloud Run and Azure both gate container start on an HTTP probe
+against `$PORT`; a pure poll loop with no listener is killed as a failed revision, with an error
+about the port. `src/worker.ts` opens a health endpoint only when `PORT` is set.
 
 ## What to measure (not read)
 
