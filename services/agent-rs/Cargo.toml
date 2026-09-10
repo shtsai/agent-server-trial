@@ -1,0 +1,18 @@
+[package]
+name = "agent-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+# A toy, but the image size is one of the things being measured. Strip and thin the binary.
+strip = true
+lto = "thin"
+codegen-units = 1

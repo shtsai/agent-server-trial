@@ -8,51 +8,72 @@ Full context and the questions this exists to answer live in `legal_demo`'s
 
 ## What it is
 
-A minimal agentic backend: submit a question, a 3-step loop calls Claude, progress is persisted and
-streamed, and a run survives a browser refresh and a worker restart.
-
 ```
-web/                 Next.js frontend — submit a run, subscribe to its events
-services/agent-ts/   TypeScript agent service (the thing under test)
-services/doc-py/     Python FastAPI service — exists only to exercise polyglot + bindings
-db/schema.sql        Postgres: run + run_event
+web/                 Next.js frontend — submit a run, poll it, render what happened
+services/agent-rs/   Rust (axum + tokio) agent service — the thing under test
 ```
 
-**One Neon Postgres database serves both deployments**, so the only variable is the platform.
+Submit a question; a 3-step loop calls Claude; each step is appended to the run and rendered as it
+lands. **There is no database.** The frontend and the agent talk directly over the platform's own
+internal networking — a Vercel binding, or Railway private networking — and the run lives in the
+agent process's memory.
 
-## The four deployments
+## What that trade actually costs
 
-Same code, one Neon Postgres, four platforms. `deploy/` has a page each.
+The database was doing two jobs, and only one of them is replaced.
 
-| | Vercel Services | Railway | Cloud Run | Azure Container Apps |
-|---|---|---|---|---|
-| Agent reachable publicly? | no rewrite | no domain | `--no-allow-unauthenticated` | `--ingress internal` |
-| Work driven by | `POST /drain` from Cron | always-on poll loop | poll loop, `--no-cpu-throttling` + `--min-instances=1` | always-on replica, or a KEDA queue trigger |
-| Scales to zero | ✓ | ✗ if no ingress | ✓ per service, not the worker | ✓, and KEDA can wake it |
-| Long jobs | 30 min | unbounded | 60 min + Jobs | jobs |
-| Deploys | one atomic deployment | ordered by reference variables | per service | per app |
+| | With Postgres | Now |
+|---|---|---|
+| Queue between frontend and worker | the `run` table | **gone** — the frontend calls the agent directly |
+| Browser refresh mid-run | survives | **survives** (state is server-side, keyed by id) |
+| Container restart mid-run | survives, requeued | **run is lost** |
+| More than one replica | fine | **broken** — a poll can hit a container that never saw the run |
 
-**The "driven by" row is the whole experiment.** A Vercel container scales down after 5 minutes
-without traffic, so a poll loop cannot exist there at all. The others can run one — but on every
-single one of them, doing so means giving up scale-to-zero for that service. Azure's KEDA queue
-trigger is the only escape on the list, because the wake signal lives *outside* the app.
+Those last two are the price, and they are paid deliberately: this trial is measuring **platform
+plumbing**, not durability, and a queue that exists only to be a queue is exactly what the direct
+path removes.
 
-**And a worker still has to listen.** Cloud Run and Azure both gate container start on an HTTP probe
-against `$PORT`; a pure poll loop with no listener is killed as a failed revision, with an error
-about the port. `src/worker.ts` opens a health endpoint only when `PORT` is set.
+**The replica hazard is the dangerous one**, because it works perfectly at one replica and fails
+intermittently at two — which reads as a flaky product rather than an architecture constraint. So it
+is made *visible* rather than documented: every response carries the container's `instance` id, the
+page compares the container that created a run against the one answering each poll and banners any
+difference, and a poll that finds no run returns an explicit `lost` with the reason rather than a
+bare 404.
 
 ## What to measure (not read)
 
-1. Deploy wall time, and what happens when one service is deliberately slow to build.
-2. Cold start on the first request after idle.
-3. Real cost after seven days.
-4. **`kill -9` the worker mid-run.** Does exactly one answer come out? This is the ballgame.
+1. **Does detached background work progress between requests?** Submit a run, close the tab, wait
+   20s, read `active` from `/api/health`. On Vercel this is an inference from the 5-minute
+   scale-down, not a guarantee — and if it is wrong, this whole shape is wrong there.
+2. **Does the platform keep you on one container?** Poll `/api/health` under concurrent load and
+   watch `instance`. This is the ballgame now.
+3. Deploy wall time, and what a slow-building service does to the other one.
+4. Cold start on the first request after idle.
+5. Real cost after seven days.
+6. `kill -9` the agent mid-run. The run *should* be lost — the measurement is whether the frontend
+   says so honestly and promptly, or hangs.
 
-## Setup
+## Endpoints
+
+| | |
+|---|---|
+| `POST /api/runs` `{question}` | → `{id, status, instance}`, work starts detached |
+| `GET /api/runs/:id?after=<seq>` | → `{run, events, instance}`, or 404 `{lost, reason}` |
+| `GET /api/health` | → `{ok, instance, runs, active}` |
+
+All three proxy through `web`; the agent is internal on both platforms and is never called from the
+browser.
+
+## Local
 
 ```bash
-cp .env.example .env          # fill in DATABASE_URL + ANTHROPIC_API_KEY
-npm install
-psql "$DATABASE_URL" -f db/schema.sql
-npm run dev
+cp .env.example .env         # ANTHROPIC_API_KEY is the only one that matters
+npm --prefix web install
+npm run dev                  # cargo run + next dev
 ```
+
+## Deploy
+
+`deploy/vercel.md` and `deploy/railway.md`, one page each. The Cloud Run and Azure arms were
+removed along with the worker: both existed to compare *always-on poll loop* shapes, and there is no
+worker any more.

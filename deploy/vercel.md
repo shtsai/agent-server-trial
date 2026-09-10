@@ -1,30 +1,62 @@
 # The Vercel arm
 
-One project, three services, **one atomic deployment** — all services build separately and in
-parallel, and nothing goes live until every one of them is ready. A slow-building service delays the
-deploy; it does not create a window where a new frontend talks to an old backend.
+One project, **two services, one atomic deployment**. Both build in parallel and nothing goes live
+until both are ready — so there is no window in which a new frontend talks to an old backend.
 
-`vercel.json` at the repo root declares all of it. The single top-level rewrite sends public traffic
-to `web`; `agent` and `doc` have **no rewrite of their own, so they are unreachable from the
-internet**. They are reached only over bindings, which inject `AGENT_SERVICE_URL` and
-`DOC_SERVICE_URL` at runtime. Vercel generates those values — never set them yourself.
+`vercel.json` at the repo root declares all of it:
 
-## The constraint this arm is here to demonstrate
+| Service | Root | Runtime | Public |
+|---|---|---|---|
+| `web` | `web/` | Next.js | **yes** — the single top-level rewrite |
+| `agent` | `services/agent-rs/` | container (`Dockerfile`) | **no rewrite of its own, so unreachable from the internet** |
 
-A container scales down after **5 minutes without traffic** in production (30 seconds in preview),
-with `SIGTERM` and a 30-second grace period. **A polling worker therefore cannot exist here.** The
-cron on `/api/drain` is the substitute: something outside the container has to provide the heartbeat.
+`web` reaches `agent` over a **binding**, which injects `AGENT_SERVICE_URL` at runtime. Vercel
+generates that value — never set it yourself.
 
-## Env vars to set in the project
+## Setup, in order
 
-`DATABASE_URL`, `ANTHROPIC_API_KEY`. Everything else is injected.
+1. **Import the repo** at vercel.com. **Root Directory must stay the repo root (`./`)**, not `web/`.
+   The `services` block is only read from the root; pointing at `web/` silently produces a
+   single-service project with no agent and no obvious error.
+2. **Set `ANTHROPIC_API_KEY`** (Production + Preview) *before* the first deploy. It is the only
+   variable. Do **not** set `AGENT_SERVICE_URL`.
+3. **Deploy by pushing to `main`.** Never `vercel --prod` from a checkout — it deploys the tree you
+   are standing in, which is how a stale commit reaches production while reporting success.
+
+## Verify — the checks are ordered so each failure is distinguishable
+
+```bash
+curl https://<url>/api/health     # {"ok":true,"instance":"…","runs":0,"active":0}
+```
+
+- `{"unreachable":true}` → the **binding did not resolve**. Check that the `agent` service actually
+  built; a single-service project fails exactly this way.
+- A 404 on a run → the run is **lost**, and the JSON says which of the two causes it was.
+- **Call `/api/health` twice and compare `instance`.** If it changes while you are using the site,
+  Vercel is running more than one replica — and with run state in memory, that is the failure this
+  whole shape has. The page banners it too.
+
+## What removing the database changed here
+
+The old arm needed a cron on `/api/drain`, because a container scales down after **5 minutes**
+without traffic and a poll loop is not traffic. **With the frontend talking to the agent directly,
+none of that exists.** The browser's own 1s poll is inbound traffic, so the container stays warm for
+exactly as long as a run is being watched, and scale-down happens when nobody is looking — which is
+the correct behaviour rather than a workaround.
+
+## The open question this arm is here to answer
+
+`POST /runs` returns immediately and the work continues in a detached `tokio::spawn`. A Vercel
+Service container keeps running between requests until it scales down, so this *should* progress —
+but that is an inference, not a documented guarantee. **Measure it:** submit a run, close the tab,
+wait 20s, then hit `/api/health` and read `active`. If it is still 1 and the run never completes,
+detached work is being suspended between requests and the whole no-database shape is wrong here.
 
 ## Things to watch
 
 - Bindings resolve **at runtime only** — not during a build, and not in middleware.
-- An internal call skips the firewall, Deployment Protection, middleware and CDN accounting, and a
-  binding **grants reachability but does not authenticate**. Application-level authorization between
-  services is your job.
-- Billing: services carry no per-service base fee; each is billed like a function (Active CPU +
-  provisioned memory + invocations). A binding call is one service request with no separate Edge
-  Request or Fast Data Transfer charge.
+- A binding **grants reachability and does not authenticate**. `agent` has no auth because it has
+  no public route; the day it gets one, that is a real hole.
+- Billing: no per-service base fee. Each is billed like a function — Active CPU, provisioned memory,
+  invocations — and **Active CPU excludes I/O wait inside a request**, which matters here because
+  the agent spends nearly all of its time blocked on Anthropic.

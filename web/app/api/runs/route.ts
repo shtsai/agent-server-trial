@@ -1,14 +1,25 @@
-// The frontend never calls the agent service from the browser -- the agent is internal on both
-// platforms. This route is the only thing that knows its address.
+// The browser never calls the agent service directly -- it is internal on both platforms, and a
+// Vercel binding is resolvable only at runtime, inside a server process.
 const AGENT = () => process.env.AGENT_SERVICE_URL ?? "http://localhost:3001";
 
 export async function POST(req: Request) {
   const body = await req.text();
-  const res = await fetch(`${AGENT()}/runs`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body,
-    signal: AbortSignal.timeout(10_000),
-  });
-  return new Response(await res.text(), { status: res.status, headers: { "content-type": "application/json" } });
+  try {
+    const res = await fetch(`${AGENT()}/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      signal: AbortSignal.timeout(10_000),
+      cache: "no-store",
+    });
+    return new Response(await res.text(), {
+      status: res.status,
+      headers: { "content-type": "application/json" },
+    });
+  } catch (err) {
+    return Response.json(
+      { unreachable: true, reason: err instanceof Error ? err.message : String(err) },
+      { status: 502 },
+    );
+  }
 }

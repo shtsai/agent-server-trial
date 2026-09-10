@@ -8,19 +8,10 @@
       ]
     },
     "agent": {
-      "root": "services/agent-ts/",
+      "root": "services/agent-rs/",
       "runtime": "container",
-      "entrypoint": "Dockerfile.vercel",
-      "bindings": [
-        { "type": "service", "service": "doc", "format": "url", "env": "DOC_SERVICE_URL" }
-      ]
-    },
-    "doc": {
-      "root": "services/doc-py/",
-      "runtime": "container",
-      "entrypoint": "Dockerfile.vercel"
+      "entrypoint": "Dockerfile"
     }
   },
-  "rewrites": [{ "source": "/(.*)", "destination": { "service": "web" } }],
-  "crons": [{ "path": "/api/drain", "schedule": "* * * * *" }]
+  "rewrites": [{ "source": "/(.*)", "destination": { "service": "web" } }]
 }

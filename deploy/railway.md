@@ -1,38 +1,53 @@
 # The Railway arm
 
-Three services in **one project and one environment** — private networking (`*.railway.internal`)
-only works within that boundary, and does not reach Vercel or another Railway project.
+Two services in **one project and one environment** — private networking (`*.railway.internal`) is
+scoped to exactly that boundary and does not reach Vercel or another Railway project.
 
-| Service | Root | Dockerfile | Public domain | Start |
-|---|---|---|---|---|
-| `web` | repo root | `web/Dockerfile` (or Nixpacks/Next preset) | **yes** | `next start` |
-| `agent-worker` | repo root | `services/agent-ts/Dockerfile` | **no** | `npm run worker` |
-| `doc` | `services/doc-py/` | `services/doc-py/Dockerfile` | **no** | uvicorn |
+| Service | Root directory | Public domain | Start |
+|---|---|---|---|
+| `web` | `web/` | **yes** | `next start` (Nixpacks/Next preset) |
+| `agent` | `services/agent-rs/` | **no** | the `Dockerfile` |
 
-`agent-worker` gets **no public domain**: no ingress, nothing to authenticate, nothing to attack.
-That is the arm's whole security claim, and it is also why **app sleeping cannot be used on it** —
-sleeping wakes on an inbound request, and a worker has none.
+Both roots are **self-contained**, which is a deliberate change: the previous TypeScript service
+needed npm workspaces and therefore a repo-root build context, so it carried two Dockerfiles. A
+Cargo project needs nothing above its own directory, so one Dockerfile serves every platform.
 
-## Settings that matter
+## Setup, in order
 
-- **Watch paths** so a `web/`-only change does not rebuild the worker:
-  `services/agent-ts/**` for `agent-worker`, `services/doc-py/**` for `doc`, `web/**` for `web`.
-- **Build context is the repo root** for `agent-worker` (npm workspaces), so set the root directory
-  to `/` and point at the Dockerfile path. `doc` is self-contained and can use its own root.
-- **Deploy ordering comes from reference variables.** Give `web` a
-  `DOC_HEALTH=${{doc.RAILWAY_PRIVATE_DOMAIN}}`-style reference if you want to *observe* the
-  ordering behaviour — a service that references another waits for it in a batch deploy.
-- **Env**: `DATABASE_URL` (same Neon database as the Vercel arm), `ANTHROPIC_API_KEY`,
-  `DOC_SERVICE_URL=http://doc.railway.internal:8000`, and on `web`,
-  `AGENT_SERVICE_URL` — but note the Railway arm has no agent HTTP service by default. Either run a
-  second `agent-api` service from the same image with `npm start`, or point `web` at it. **Deciding
-  this is part of the experiment**: the Vercel arm forces one shape, Railway allows two.
+1. New project → deploy from the GitHub repo. Add **two services** from the same repo.
+2. `agent`: root directory `services/agent-rs`, builder **Dockerfile**. **Attach no public domain.**
+3. `web`: root directory `web`. Attach a public domain.
+4. **Watch paths**, so a `web/`-only change does not rebuild Rust: `services/agent-rs/**` on
+   `agent`, `web/**` on `web`.
+5. Env:
+   - `agent` → `ANTHROPIC_API_KEY`
+   - `web` → `AGENT_SERVICE_URL=http://agent.railway.internal:3001`
+     (Railway does not inject this; unlike Vercel, you set it — and a reference variable
+     `${{agent.RAILWAY_PRIVATE_DOMAIN}}` is the way to make `web` wait for `agent` in a batch deploy,
+     which is the ordering behaviour worth observing.)
+6. **Replicas: 1, and leave it there.** With run state in memory, a second replica means a poll can
+   land on a container that never saw the run. The page banners it and `/api/health` shows the
+   instance changing, but the fix is one replica, not better polling.
 
-> Railway config-as-code (`railway.json` per service) is deliberately NOT committed here — the
-> schema was not verified when this was written, and a wrong committed config is worse than none.
-> Configure in the dashboard first, then export it if it proves worth pinning.
+## App sleeping
+
+`agent` has no public domain, so it has no inbound traffic of its own — but **it does receive
+traffic**: every poll from `web` arrives over the private network. That is the difference from the
+old worker arm, where sleeping was unusable because a poll loop generates no ingress. Whether
+Railway's sleep counts private-network traffic as a wake signal is **worth measuring** and is not
+documented clearly.
 
 ## Cost expectation
 
-A ~250 MB idle Node worker is about **$2.50/month** ($10/GB-RAM-month, metered per second); idle CPU
-rounds to zero. Hobby is $5/month including $5 of usage, so the whole arm should sit inside it.
+A Rust binary idles at roughly 10–20 MB RSS against the old Node worker's ~250 MB. At $10/GB-RAM-month
+metered per second, that is cents rather than $2.50 — the always-on cost of this arm is now
+essentially the `web` service. Hobby ($5/month, $5 usage included) should cover the whole thing.
+
+## Verify
+
+```bash
+curl https://<railway-domain>/api/health   # proxied through web to the internal agent
+```
+
+Same three signals as the Vercel arm: `unreachable` means private networking is not wired,
+`lost` means the container restarted, and a changing `instance` means more than one replica.
