@@ -18,8 +18,18 @@ generates that value — never set it yourself.
 1. **Import the repo** at vercel.com. **Root Directory must stay the repo root (`./`)**, not `web/`.
    The `services` block is only read from the root; pointing at `web/` silently produces a
    single-service project with no agent and no obvious error.
-2. **Set `ANTHROPIC_API_KEY`** (Production + Preview) *before* the first deploy. It is the only
-   variable. Do **not** set `AGENT_SERVICE_URL`.
+2. **Set `ANTHROPIC_API_KEY`** (Production + Preview) *before* the first deploy. **It is the only
+   variable you set, and this is the step that actually goes wrong.**
+
+   Do **not** add `AGENT_SERVICE_URL`, and do **not** add `PORT`. A project environment variable
+   *shadows* the value Vercel generates for a binding, so an `AGENT_SERVICE_URL` you set by hand
+   wins over the real one — and if it is empty, `web` reads `""` and every call to the agent dies
+   as a URL parse error naming no service at all. `PORT` is worse in kind: it applies to every
+   service in the project, including containers the platform assigns a port to.
+
+   This happened on the first deployment of this repo. Both services had built correctly; the
+   config was right; the cause was three variables pasted out of `.env.example` into the
+   dashboard. Two of the three belong to the platform.
 3. **Deploy by pushing to `main`.** Never `vercel --prod` from a checkout — it deploys the tree you
    are standing in, which is how a stale commit reaches production while reporting success.
 
