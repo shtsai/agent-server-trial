@@ -72,13 +72,27 @@ calls split 6/2 across two.** A run created on one and polled on the other answe
 browser polling sequentially stays sticky, which is exactly why this would have shipped unnoticed —
 and why the container id is on every response.
 
-**The topology is version-controlled on one platform and dashboard state on the other.**
-`vercel.json` declares both services, their roots and the binding between them, so a reviewer can
-read the deployment's shape out of the repo. Railway's `railway.json` has **no `rootDirectory`
-field** (verified against its published schema), so which directory a service builds from is a
-setting somebody clicked. Both platforms punished a missing/wrong value for the same thing with an
-error pointing somewhere else: Vercel with a URL parse error naming no service, Railway with a
-*Node* start-command error for a *Rust* service.
+**The topology is declared in the repo on one platform and held account-side on the other.**
+`vercel.json` declares both services, their roots and the binding between them, and Vercel reads it
+**at import time**, so a reviewer can read the deployment's shape out of the repo and a PR changes
+it. On Railway the same facts live in the account. Three things checked rather than assumed:
+
+- `railway.json` — the build config this repo commits — has **no `rootDirectory`** field (verified
+  against `railway.schema.json`; it carries `builder`, `dockerfilePath`, `watchPatterns`,
+  `startCommand` and nothing above them).
+- The **GraphQL API does**: `ServiceInstanceUpdateInput` exposes `rootDirectory`, `numReplicas`,
+  `sleepApplication` and `watchPatterns` (verified by introspecting
+  `backboard.railway.com/graphql/v2`). So it is scriptable — via `railway api` or the CLI — and
+  "you must click it" is wrong.
+- Railway is **actively shipping infrastructure-as-code** (`railway config` scaffolds
+  `.railway/railway.ts`), but the published `railway@2.0.17` npm package does not export the
+  `railway/iac` module that scaffold imports. So that path is not usable today and this whole
+  comparison is **time-stamped, not permanent**.
+
+The honest difference: on Vercel the service topology is a file the build reads; on Railway it is
+account state you can script but the build cannot see. Both platforms punished a missing or wrong
+value for the same thing with an error pointing somewhere else — Vercel with a URL parse error
+naming no service, Railway with a *Node* start-command error for a *Rust* service.
 
 **Both failures were caused by a file in this repo inviting the mistake**, not by the platforms:
 `.env.example` listed variables the platform is supposed to generate, and a root `package.json`

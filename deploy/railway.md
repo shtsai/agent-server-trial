@@ -38,11 +38,20 @@ platforms in this trial:
 
 > **Railway's `railway.json` has no `rootDirectory` field** — verified against
 > `railway.schema.json`, which exposes `builder`, `dockerfilePath`, `watchPatterns` and
-> `startCommand` and nothing above them. **Which directory a service builds from is dashboard
-> state, not repo state.** Vercel's `vercel.json` declares the whole topology — both services,
-> their roots, and the binding between them — so the shape of the deployment is version-controlled
-> and reviewable. On Railway it is a setting somebody clicked, and a cloned environment or a second
-> project reproduces it only if someone remembers.
+> `startCommand` and nothing above them. **The build config the repo commits cannot say which
+> directory the service builds from.**
+>
+> It is *not* dashboard-only, though: the GraphQL API's `ServiceInstanceUpdateInput` exposes
+> `rootDirectory` (and `numReplicas`, `sleepApplication`, `watchPatterns`) — verified by
+> introspecting `backboard.railway.com/graphql/v2` — so it is scriptable through `railway api`.
+> Railway is also shipping IaC (`railway config` → `.railway/railway.ts`), but the published
+> `railway@2.0.17` package does not export the `railway/iac` module that file imports, so that
+> path does not work yet. **Treat this paragraph as dated.**
+>
+> The difference from Vercel that survives all of that: `vercel.json` is read **at import time**,
+> so the topology is a reviewable file the build itself consumes. Railway's equivalent is account
+> state — scriptable, but invisible to the repo, so a cloned environment reproduces it only if
+> someone re-runs the script.
 
 `railway.json` is committed per service for everything it *can* carry (builder, Dockerfile path,
 watch patterns). Root Directory is the one thing it cannot, so it stays step 2.
