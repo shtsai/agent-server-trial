@@ -94,6 +94,20 @@ account state you can script but the build cannot see. Both platforms punished a
 value for the same thing with an error pointing somewhere else — Vercel with a URL parse error
 naming no service, Railway with a *Node* start-command error for a *Rust* service.
 
+**The two platforms are inverted on where configuration lives, and each is weak exactly where the
+other is strong.** Vercel declares the *topology* in the repo and has **no per-service environment
+variables at all** — `vercel env` is scoped to the project and to production/preview/development,
+the CLI has no `service` command (zero matches in `vercel --help`), and `vercel.json`'s service
+config has no `env` key (verified against `openapi.vercel.sh/vercel.json`). Railway is the mirror:
+the topology is account state, but **every variable belongs to one service**.
+
+That inversion is not trivia — it *is* why the two failures took the shape they did. A `PORT`
+variable set on the Vercel project reached both services because there was nowhere else to put it;
+on Railway the same variable could only ever have hit the service you set it on. Conversely
+Railway's missing Root Directory could not be caught by review, because no file in the repo states
+it. **Neither platform lets you review the whole deployment in one place**, they just fail on
+opposite halves.
+
 **Both failures were caused by a file in this repo inviting the mistake**, not by the platforms:
 `.env.example` listed variables the platform is supposed to generate, and a root `package.json`
 existed only for local convenience while being the first thing Railway's autodetect finds. Both are
