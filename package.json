@@ -1,8 +1,0 @@
-{
-  "name": "agent-server-trial",
-  "private": true,
-  "scripts": {
-    "dev": "npm --prefix web run dev & cargo run --manifest-path services/agent-rs/Cargo.toml",
-    "build": "npm --prefix web run build && cargo build --release --manifest-path services/agent-rs/Cargo.toml"
-  }
-}

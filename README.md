@@ -64,13 +64,36 @@ bare 404.
 All three proxy through `web`; the agent is internal on both platforms and is never called from the
 browser.
 
+## Findings so far
+
+**Vercel runs more than one container, and this shape cannot survive that.** Measured 2026-09-10 on
+the live deployment: 20 sequential `/api/health` calls all returned one container id; **8 concurrent
+calls split 6/2 across two.** A run created on one and polled on the other answers `lost`. One
+browser polling sequentially stays sticky, which is exactly why this would have shipped unnoticed —
+and why the container id is on every response.
+
+**The topology is version-controlled on one platform and dashboard state on the other.**
+`vercel.json` declares both services, their roots and the binding between them, so a reviewer can
+read the deployment's shape out of the repo. Railway's `railway.json` has **no `rootDirectory`
+field** (verified against its published schema), so which directory a service builds from is a
+setting somebody clicked. Both platforms punished a missing/wrong value for the same thing with an
+error pointing somewhere else: Vercel with a URL parse error naming no service, Railway with a
+*Node* start-command error for a *Rust* service.
+
+**Both failures were caused by a file in this repo inviting the mistake**, not by the platforms:
+`.env.example` listed variables the platform is supposed to generate, and a root `package.json`
+existed only for local convenience while being the first thing Railway's autodetect finds. Both are
+gone. Prose telling you not to do something loses to a file whose shape invites it.
+
 ## Local
 
 ```bash
 cp .env.example .env         # ANTHROPIC_API_KEY is the only one that matters
 npm --prefix web install
-npm run dev                  # cargo run + next dev
+make dev                     # cargo run + next dev
 ```
+
+There is deliberately **no `package.json` at the repo root** — see `deploy/railway.md`.
 
 ## Deploy
 

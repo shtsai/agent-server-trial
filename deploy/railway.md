@@ -15,10 +15,39 @@ Cargo project needs nothing above its own directory, so one Dockerfile serves ev
 ## Setup, in order
 
 1. New project → deploy from the GitHub repo. Add **two services** from the same repo.
-2. `agent`: root directory `services/agent-rs`, builder **Dockerfile**. **Attach no public domain.**
-3. `web`: root directory `web`. Attach a public domain.
-4. **Watch paths**, so a `web/`-only change does not rebuild Rust: `services/agent-rs/**` on
-   `agent`, `web/**` on `web`.
+2. **`agent`: set Root Directory to `services/agent-rs` BEFORE the first build.** This is the step
+   that fails, and it fails confusingly — see below. Builder is **Dockerfile**, picked up from the
+   committed `services/agent-rs/railway.json`. **Attach no public domain.**
+3. **`web`: set Root Directory to `web`.** Attach a public domain.
+
+### The failure this arm hits first
+
+A service whose Root Directory is unset builds from the **repo root**, and Railway's builder
+autodetects a language there. The error it produces has nothing to do with the real problem:
+
+```
+⚠ No node package manager detected, using npm
+↳ Detected Node
+✖ No start command detected. Specify a start command
+```
+
+That is a **Node** error for a **Rust** service. The repo root now contains no `package.json` and
+no manifest of any kind (a `Makefile` drives local dev instead) precisely so this cannot happen
+again — but the underlying constraint is permanent, and it is a real difference between the two
+platforms in this trial:
+
+> **Railway's `railway.json` has no `rootDirectory` field** — verified against
+> `railway.schema.json`, which exposes `builder`, `dockerfilePath`, `watchPatterns` and
+> `startCommand` and nothing above them. **Which directory a service builds from is dashboard
+> state, not repo state.** Vercel's `vercel.json` declares the whole topology — both services,
+> their roots, and the binding between them — so the shape of the deployment is version-controlled
+> and reviewable. On Railway it is a setting somebody clicked, and a cloned environment or a second
+> project reproduces it only if someone remembers.
+
+`railway.json` is committed per service for everything it *can* carry (builder, Dockerfile path,
+watch patterns). Root Directory is the one thing it cannot, so it stays step 2.
+4. **Watch paths** are committed in each `railway.json`, so a `web/`-only change does not rebuild
+   Rust. Confirm they took effect rather than assuming.
 5. Env:
    - `agent` → `ANTHROPIC_API_KEY`
    - `web` → `AGENT_SERVICE_URL=http://agent.railway.internal:3001`
