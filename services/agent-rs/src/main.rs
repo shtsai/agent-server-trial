@@ -86,7 +86,7 @@ async fn read(
 /// Bumped by hand to prove WHICH build is serving. A deploy is only observable if something the
 /// new code produces is visible from outside it — a green checkmark says the platform finished,
 /// not that the thing you changed is what answers.
-const BUILD_MARKER: &str = "exp-2-server-only";
+const BUILD_MARKER: &str = "exp-3-both";
 
 async fn health(State(store): State<Arc<Store>>) -> Json<serde_json::Value> {
     Json(json!({
