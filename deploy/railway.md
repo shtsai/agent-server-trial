@@ -100,6 +100,19 @@ That is exactly this project's path, and it matches what was measured here: in t
 experiment, `agent` and `web` were **both `BUILDING` at the same 25-second poll**, and `agent`
 finished 47 seconds before `web`. No ordering occurred, and none was supposed to.
 
+**Measured, and it did not happen on a documented batch path either.** Duplicating the environment
+(`railway environment new batchtest --duplicate production`) is listed as a batch deploy, and the
+reference variable **survived duplication** — `web`'s unrendered value in the new environment was
+still `http://${{agent.RAILWAY_PRIVATE_DOMAIN}}:3001`. Both deployments were nevertheless **created
+in the same second**, and `web` finished at 95s against its usual ~88s build. Had it waited for
+`agent` (done at 21s) and then built, it would have finished around 109s.
+
+That is suggestive rather than conclusive — deployment-record timestamps are not build-start
+timestamps, and Railway's build logs carry no clock. But two paths have now been tried and neither
+serialized. One untested hypothesis worth a follow-up: `RAILWAY_PRIVATE_DOMAIN` is a
+**platform-provided** variable, and the dependency graph may only track references to
+**user-defined** ones. Referencing a variable you set yourself on `agent` would settle it.
+
 **So the reference variable is still worth having** — it records the edge, draws the canvas
 connection, and *does* order a batch deploy — but on the push path it buys ordering you will not
 get. If you need the ordering, the deploy has to be a batch: `environmentTriggersDeploy`
