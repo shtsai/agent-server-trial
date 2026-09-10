@@ -100,24 +100,43 @@ That is exactly this project's path, and it matches what was measured here: in t
 experiment, `agent` and `web` were **both `BUILDING` at the same 25-second poll**, and `agent`
 finished 47 seconds before `web`. No ordering occurred, and none was supposed to.
 
-**Measured, and it did not happen on a documented batch path either.** Duplicating the environment
-(`railway environment new batchtest --duplicate production`) is listed as a batch deploy, and the
-reference variable **survived duplication** — `web`'s unrendered value in the new environment was
-still `http://${{agent.RAILWAY_PRIVATE_DOMAIN}}:3001`. Both deployments were nevertheless **created
-in the same second**, and `web` finished at 95s against its usual ~88s build. Had it waited for
-`agent` (done at 21s) and then built, it would have finished around 109s.
+**Measured, and it works — the gate is on DEPLOY, not on BUILD.** Duplicating the environment with
+`agent` deliberately slowed (`--service-config agent deploy.preDeployCommand "sleep 150"`) so the
+constraint had to bind:
 
-That is suggestive rather than conclusive — deployment-record timestamps are not build-start
-timestamps, and Railway's build logs carry no clock. But two paths have now been tried and neither
-serialized. One untested hypothesis worth a follow-up: `RAILWAY_PRIVATE_DOMAIN` is a
-**platform-provided** variable, and the dependency graph may only track references to
-**user-defined** ones. Referencing a variable you set yourself on `agent` would settle it.
+```
+  0-80s   agent=BUILDING   web=BUILDING     builds run in PARALLEL
+ 90-200s  agent=BUILDING   web=QUEUED       web finished building, then WAITED 130s
+   210s   agent=DEPLOYING  web=QUEUED
+   220s   agent=SUCCESS    web=DEPLOYING    released the instant agent succeeded
+   230s   agent=SUCCESS    web=SUCCESS
+```
+
+Three things this settles, each of which an earlier run here got wrong:
+
+- **Ordering is real on a batch path**, and `RAILWAY_PRIVATE_DOMAIN` — a *platform-provided*
+  variable — counts as a dependency reference. It does not have to be one you defined.
+- **Only the deploy step is ordered.** Both services build concurrently; the dependent one parks in
+  `QUEUED` between its build finishing and its container starting. So the wall-clock cost of
+  ordering is bounded by the *dependency's* deploy time, not by serialising two builds.
+- **A test where the constraint never binds proves nothing.** The first attempt here duplicated the
+  environment unmodified: `agent` finished in 21s while `web` was still 88s into its own build, so
+  `web` never had to wait and the run looked identical to no ordering at all. It was recorded as
+  "PARALLEL — ordering did not happen". Making the dependency SLOWER than the dependent is what
+  turned an unfalsifiable observation into a measurement.
 
 **So the reference variable is still worth having** — it records the edge, draws the canvas
 connection, and *does* order a batch deploy — but on the push path it buys ordering you will not
-get. If you need the ordering, the deploy has to be a batch: `environmentTriggersDeploy`
-("Deploys all connected triggers for an environment") is the API mutation for that, and would be
-invoked from CI *after* a push rather than letting the per-service push triggers fire.
+get. If you need the ordering, the deploy has to *be* a batch, and reaching one deliberately is
+harder than it looks:
+
+- `environmentTriggersDeploy` reads like the answer ("Deploys all connected triggers for an
+  environment") but its input requires a `serviceId`, so it is per-service, not a batch.
+- `railway variable set --skip-deploys` **applies** the change without deploying rather than
+  staging it, so `environmentPatchCommitStaged` then answers `"No patch to apply"`. Staged changes
+  appear to be dashboard-only.
+- The batch paths that definitely work are the documented four: template deploys, applying staged
+  changes **from the dashboard**, duplicating an environment, and PR environments.
 
 **And ordering is not compatibility.** It solves the ADDITIVE direction — `web` starts calling a new
 endpoint, so `agent` must be live first. It does nothing for a removal or a rename, because the

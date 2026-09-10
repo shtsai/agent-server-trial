@@ -107,6 +107,28 @@ web at 88s). That is the whole trade — Railway buys build time by giving up th
 (`/api/health` → `marker`, `/api/build` → `web`). A green checkmark says the platform finished; only
 something the new code produces says the change is what is answering.
 
+**Railway orders dependent deploys — but only on a batch path, and only at the deploy step.**
+`web` referencing `${{agent.RAILWAY_PRIVATE_DOMAIN}}` is the dependency. Proven by duplicating the
+environment with `agent` deliberately slowed so the constraint had to bind:
+
+```
+  0-80s   agent=BUILDING   web=BUILDING     builds run in PARALLEL
+ 90-200s  agent=BUILDING   web=QUEUED       web built, then WAITED 130s
+   220s   agent=SUCCESS    web=DEPLOYING    released the instant agent succeeded
+```
+
+Builds are concurrent; the dependent service parks in `QUEUED` between finishing its build and
+starting its container. It does **not** apply to GitHub push deploys — "even in a monorepo where one
+push triggers multiple services, each service deploys independently" — which is this project's
+normal path, so nothing here is ordered day to day.
+
+**The methodological lesson is the bigger one.** The first attempt duplicated the environment
+unmodified: `agent` finished in 21s while `web` was still 88s into its own build, so `web` never had
+to wait, and the run was indistinguishable from no ordering at all. It was written up here as
+"ordering did not happen". **A test whose constraint never binds cannot fail, and reads exactly like
+a negative result.** Making the dependency slower than the dependent is what converted it into a
+measurement.
+
 **Railway's private network is IPv6-only, and that failure is silent.** `agent.railway.internal`
 resolves to an AAAA record, so a server bound to `0.0.0.0` is invisible to every other service in
 the project while printing "listening" and passing the platform's own deploy check. The single
