@@ -66,11 +66,26 @@ browser.
 
 ## Findings so far
 
-**Vercel runs more than one container, and this shape cannot survive that.** Measured 2026-09-10 on
-the live deployment: 20 sequential `/api/health` calls all returned one container id; **8 concurrent
-calls split 6/2 across two.** A run created on one and polled on the other answers `lost`. One
-browser polling sequentially stays sticky, which is exactly why this would have shipped unnoticed —
-and why the container id is on every response.
+**Vercel runs more than one container; Railway at one replica does not.** The same 8-concurrent
+`/api/health` sweep, both arms live, 2026-09-10:
+
+| | Vercel Services | Railway (`numReplicas: 1`) |
+|---|---|---|
+| 20 sequential calls | 1 container | 1 container |
+| **8 concurrent calls** | **split 6/2 across two** | **8/8 one container** |
+
+A run created on one container and polled on the other answers `lost`. One browser polling
+sequentially stays sticky on both platforms, which is exactly why this would have shipped unnoticed
+— and why the container id is on every response. **For a no-database design, Railway's explicit
+replica count is the property that makes it safe and Vercel's autoscaling is the property that
+breaks it.** Neither is better; they are answers to different questions.
+
+**Railway's private network is IPv6-only, and that failure is silent.** `agent.railway.internal`
+resolves to an AAAA record, so a server bound to `0.0.0.0` is invisible to every other service in
+the project while printing "listening" and passing the platform's own deploy check. The single
+symptom is `fetch failed` at the caller, one service away from the cause. Related and equally
+undocumented: **Railway injects `PORT=8080` into a service with no public domain** and does not list
+it among that service's variables — so the agent bound 8080 while `web` called 3001.
 
 **The topology is declared in the repo on one platform and held account-side on the other.**
 `vercel.json` declares both services, their roots and the binding between them, and Vercel reads it
