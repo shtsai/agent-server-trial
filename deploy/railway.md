@@ -80,6 +80,39 @@ watch patterns). Root Directory is the one thing it cannot, so it stays step 2.
    land on a container that never saw the run. The page banners it and `/api/health` shows the
    instance changing, but the fix is one replica, not better polling.
 
+## Deployment ordering — it exists, and it does not fire on a git push
+
+Railway **does** order deploys by dependency, and the dependency is the reference variable:
+
+> "A service that references another service waits for that service to finish deploying before it
+> starts, so it never boots with a stale or missing value from a dependency."
+
+Ordering follows the whole chain (A→B→C means A waits for both), and a circular reference deploys
+the conflicting services in parallel rather than deadlocking.
+
+**But it applies only to BATCH deploys** — template deploys, applying staged changes, duplicating an
+environment, and PR environments. Railway's docs are explicit about the exclusion:
+
+> "GitHub push deploys — even in a monorepo where one push triggers multiple services, each service
+> deploys independently."
+
+That is exactly this project's path, and it matches what was measured here: in the both-services
+experiment, `agent` and `web` were **both `BUILDING` at the same 25-second poll**, and `agent`
+finished 47 seconds before `web`. No ordering occurred, and none was supposed to.
+
+**So the reference variable is still worth having** — it records the edge, draws the canvas
+connection, and *does* order a batch deploy — but on the push path it buys ordering you will not
+get. If you need the ordering, the deploy has to be a batch: `environmentTriggersDeploy`
+("Deploys all connected triggers for an environment") is the API mutation for that, and would be
+invoked from CI *after* a push rather than letting the per-service push triggers fire.
+
+**And ordering is not compatibility.** It solves the ADDITIVE direction — `web` starts calling a new
+endpoint, so `agent` must be live first. It does nothing for a removal or a rename, because the
+window then contains a NEW `agent` and an OLD `web`, which is the same breakage from the other side.
+For those, expand/contract is the only answer on any platform: teach `agent` both shapes, ship
+`web`, then drop the old shape. Note also that neither platform protects the browser→`web` hop: a
+reader with the page already open is running old JavaScript against whatever the backend now is.
+
 ## App sleeping
 
 `agent` has no public domain, so it has no inbound traffic of its own — but **it does receive
