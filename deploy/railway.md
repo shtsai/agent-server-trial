@@ -63,10 +63,19 @@ watch patterns). Root Directory is the one thing it cannot, so it stays step 2.
      public domain**, and does not list it among the service's variables — so without this pin the
      agent binds 8080 while `web` calls 3001, and the only symptom is `fetch failed`. Setting it
      per-service is safe here in a way it is not on Vercel, which has no per-service env at all.
-   - `web` → `AGENT_SERVICE_URL=http://agent.railway.internal:3001`
-     (Railway does not inject this; unlike Vercel, you set it — and a reference variable
-     `${{agent.RAILWAY_PRIVATE_DOMAIN}}` is the way to make `web` wait for `agent` in a batch deploy,
-     which is the ordering behaviour worth observing.)
+   - `web` → `AGENT_SERVICE_URL=http://${{agent.RAILWAY_PRIVATE_DOMAIN}}:3001`
+
+     **Use the reference form, not the literal `agent.railway.internal`.** They resolve to the same
+     string, but a reference is the ONLY way Railway learns that `web` depends on `agent`: it is
+     what draws the connection between the two boxes in the project canvas, and what makes `web`
+     wait for `agent` in a batch deploy. With a literal, the two services are independent boxes and
+     nothing anywhere records that one calls the other — the dependency exists only in a running
+     process. This is Railway's answer to a Vercel `binding`, and unlike a binding you have to opt
+     into it.
+
+     Read it back with `railway api 'query…variables(…, unrendered: true)'`; the CLI's
+     `railway variables --kv` shows the RESOLVED value, so a literal and a reference look identical
+     there.
 6. **Replicas: 1, and leave it there.** With run state in memory, a second replica means a poll can
    land on a container that never saw the run. The page banners it and `/api/health` shows the
    instance changing, but the fix is one replica, not better polling.
