@@ -80,25 +80,32 @@ sequentially stays sticky on both platforms, which is exactly why this would hav
 replica count is the property that makes it safe and Vercel's autoscaling is the property that
 breaks it.** Neither is better; they are answers to different questions.
 
-**A server-only push rebuilds everything on Vercel, and nothing at all on Railway.** Measured by
-changing one file (`services/agent-rs/src/main.rs`) and pushing:
+**What a push actually rebuilds.** Three pushes to `main`, both platforms live, measured by
+deployment id per service and by a build marker each service serves about itself:
 
-- **Vercel** auto-deployed, and rebuilt **both** services — `next build` ran for `web` even though
-  nothing under `web/` changed. One atomic deployment means one build of everything unless you add
-  a per-service `ignoreCommand`. The old code kept serving until the whole deployment was ready,
-  which is the atomicity doing its job: a mid-build probe returned the PREVIOUS build, not a
-  half-updated pair.
-- **Railway did nothing** — because `railway add --repo` sets a service's *source* but creates **no
-  repo trigger**. `repoTriggers` was empty on both services, so no push has ever deployed them; the
-  earlier deploys in this project all came from an explicit `railway service redeploy`. Neither
-  `railway add --repo` nor `railway service source connect` creates the trigger, which needs the
-  Railway GitHub App authorized on the repo — a browser action.
+| Change | Railway `agent` | Railway `web` | Vercel |
+|---|---|---|---|
+| `services/agent-rs/` only | rebuilt | **skipped** | **both rebuilt** |
+| `web/` only | **skipped** | rebuilt | **both rebuilt** |
+| both | rebuilt | rebuilt | both rebuilt |
 
-So the CLI can build the entire Railway project except the one thing that makes it a *deployment*
-rather than a snapshot. That is worth knowing before trusting a scripted setup.
+**Railway's `watchPatterns` work and Vercel has no equivalent by default.** A Vercel deployment is
+one atomic unit, so every push rebuilds every service — including a **cold** Rust container build
+(`layer store: cold (no cached images; first build or cache miss)`) triggered by editing a single
+TypeScript file. Railway reused its Docker layer cache: the same Rust rebuild took **41s** there
+against Vercel's **2–3 minutes** for the whole deployment, every time, regardless of what changed.
 
-**How you would even notice:** `/health` returns a `BUILD_MARKER` constant. A green checkmark says
-the platform finished; only something the new code produces says the change is what is answering.
+Vercel's per-service `ignoreCommand` is the intended escape hatch and is not configured here.
+
+**The atomicity is real and worth the cost it imposes.** A probe taken mid-build on Vercel returned
+the PREVIOUS build of both services — never a new frontend against an old backend. Railway makes no
+such promise: `web` and `agent` deploy independently, so a push touching both has a window where one
+is new and the other is not. In experiment 3 that window was **47 seconds** (agent SUCCESS at 41s,
+web at 88s). That is the whole trade — Railway buys build time by giving up the guarantee.
+
+**How you would even notice any of this:** each service serves its own marker constant
+(`/api/health` → `marker`, `/api/build` → `web`). A green checkmark says the platform finished; only
+something the new code produces says the change is what is answering.
 
 **Railway's private network is IPv6-only, and that failure is silent.** `agent.railway.internal`
 resolves to an AAAA record, so a server bound to `0.0.0.0` is invisible to every other service in
