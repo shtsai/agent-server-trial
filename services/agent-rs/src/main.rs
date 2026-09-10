@@ -83,9 +83,15 @@ async fn read(
     }
 }
 
+/// Bumped by hand to prove WHICH build is serving. A deploy is only observable if something the
+/// new code produces is visible from outside it — a green checkmark says the platform finished,
+/// not that the thing you changed is what answers.
+const BUILD_MARKER: &str = "exp-1-server-only";
+
 async fn health(State(store): State<Arc<Store>>) -> Json<serde_json::Value> {
     Json(json!({
         "ok": true,
+        "marker": BUILD_MARKER,
         "instance": store.instance,
         "runs": store.len(),
         // The number that answers "does detached background work progress between requests on
