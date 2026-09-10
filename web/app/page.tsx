@@ -54,7 +54,7 @@ export default function Page() {
 
   const submit = async () => {
     setEvents([]); seq.current = 0; setDetail(""); setPhase("running");
-    setBornOn(null); setServedBy(null);
+    setBornOn(null); setServedBy(null); setRunId(null);
     const res = await fetch("/api/runs", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -71,6 +71,11 @@ export default function Page() {
   };
 
   const drifted = bornOn && servedBy && bornOn !== servedBy;
+
+  // The failure that has no run id is the one that matters most: a POST that never got an id has
+  // nothing to poll and no section to render into, so a page gated entirely on `runId` computes
+  // the error and then shows the reader a blank screen. Status nobody can see is not status.
+  const blocked = !runId && (phase === "unreachable" || phase === "failed");
 
   return (
     <main style={{ maxWidth: 720, margin: "0 auto", padding: "3rem 1.5rem" }}>
@@ -100,6 +105,15 @@ export default function Page() {
           Run
         </button>
       </div>
+
+      {blocked && (
+        <Banner tone="err">
+          <strong>Could not start a run.</strong>
+          <div style={{ marginTop: 6, fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
+            {detail}
+          </div>
+        </Banner>
+      )}
 
       {runId && (
         <section style={{ marginTop: 32 }}>

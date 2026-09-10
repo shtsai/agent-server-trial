@@ -1,11 +1,14 @@
 // The browser never calls the agent service directly -- it is internal on both platforms, and a
 // Vercel binding is resolvable only at runtime, inside a server process.
-const AGENT = () => process.env.AGENT_SERVICE_URL ?? "http://localhost:3001";
+import { agentBase, unreachable } from "@/lib/agent";
 
 export async function POST(req: Request) {
+  const base = agentBase();
+  if ("problem" in base) return unreachable(base.problem);
+
   const body = await req.text();
   try {
-    const res = await fetch(`${AGENT()}/runs`, {
+    const res = await fetch(`${base.url}/runs`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,
@@ -17,9 +20,6 @@ export async function POST(req: Request) {
       headers: { "content-type": "application/json" },
     });
   } catch (err) {
-    return Response.json(
-      { unreachable: true, reason: err instanceof Error ? err.message : String(err) },
-      { status: 502 },
-    );
+    return unreachable(err instanceof Error ? err.message : String(err));
   }
 }
