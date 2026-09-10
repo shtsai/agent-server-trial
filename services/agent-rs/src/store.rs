@@ -72,8 +72,14 @@ const RETAIN: Duration = Duration::from_secs(30 * 60);
 
 pub struct Store {
     runs: RwLock<HashMap<Uuid, Run>>,
-    /// Regenerated on every process start, so it changes when -- and only when -- the container
-    /// holding these runs was replaced. That makes a restart observable from the browser.
+    /// Identifies this PROCESS, and it must not identify anything coarser. The point of it is to
+    /// catch a poll answered by a container that never saw the run, so anything shared between
+    /// replicas silently disables the detector -- and a detector that never fires is
+    /// indistinguishable from one that found nothing.
+    ///
+    /// `VERCEL_DEPLOYMENT_ID` was exactly that mistake: every replica of one deployment reports
+    /// the same value, which is the case being looked for. A random id per process is the only
+    /// thing that is right on every platform, so nothing is read from the environment.
     pub instance: String,
 }
 
@@ -81,10 +87,7 @@ impl Store {
     pub fn new() -> Self {
         Self {
             runs: RwLock::new(HashMap::new()),
-            instance: std::env::var("RAILWAY_REPLICA_ID")
-                .ok()
-                .or_else(|| std::env::var("VERCEL_DEPLOYMENT_ID").ok())
-                .unwrap_or_else(|| Uuid::new_v4().to_string()[..8].to_string()),
+            instance: Uuid::new_v4().to_string()[..8].to_string(),
         }
     }
 
