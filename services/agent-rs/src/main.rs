@@ -103,11 +103,30 @@ async fn main() {
         .route("/health", get(health))
         .with_state(store.clone());
 
-    // Every one of these platforms hands the port in on $PORT and expects a listener on it. Cloud
-    // Run and Azure gate container start on a probe against it; Railway and Vercel route to it.
+    // Every one of these platforms hands the port in on $PORT and expects a listener on it --
+    // INCLUDING a Railway service with no public domain, which injects PORT=8080 and does not list
+    // it among the service's variables. Believing otherwise is how this bound 8080 while `web`
+    // called :3001.
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3001);
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("bind");
-    println!("[agent-rs {}] listening on 0.0.0.0:{port}", store.instance);
+
+    // Bind IPv6-first, because **Railway's private network is IPv6-only**: `agent.railway.internal`
+    // resolves to an AAAA record, so a listener on 0.0.0.0 is invisible to every other service in
+    // the project while looking perfectly healthy in its own logs. A dual-stack `::` socket accepts
+    // IPv4-mapped connections too on Linux, so this is strictly wider -- but fall back rather than
+    // assume, since a host with bindv6only set would otherwise refuse to start at all.
+    let listener = match tokio::net::TcpListener::bind(("::", port)).await {
+        Ok(l) => {
+            println!("[agent-rs {}] listening on [::]:{port} (dual-stack)", store.instance);
+            l
+        }
+        Err(e) => {
+            println!("[agent-rs {}] [::]:{port} refused ({e}); falling back to IPv4", store.instance);
+            let l = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("bind");
+            println!("[agent-rs {}] listening on 0.0.0.0:{port} — NOT reachable over Railway's \
+                      private network, which is IPv6-only", store.instance);
+            l
+        }
+    };
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown(store))

@@ -59,6 +59,10 @@ watch patterns). Root Directory is the one thing it cannot, so it stays step 2.
    Rust. Confirm they took effect rather than assuming.
 5. Env:
    - `agent` → `ANTHROPIC_API_KEY`
+   - `agent` → also `PORT=3001`. **Railway injects `PORT=8080` into a service even when it has no
+     public domain**, and does not list it among the service's variables — so without this pin the
+     agent binds 8080 while `web` calls 3001, and the only symptom is `fetch failed`. Setting it
+     per-service is safe here in a way it is not on Vercel, which has no per-service env at all.
    - `web` → `AGENT_SERVICE_URL=http://agent.railway.internal:3001`
      (Railway does not inject this; unlike Vercel, you set it — and a reference variable
      `${{agent.RAILWAY_PRIVATE_DOMAIN}}` is the way to make `web` wait for `agent` in a batch deploy,
@@ -74,6 +78,16 @@ traffic**: every poll from `web` arrives over the private network. That is the d
 old worker arm, where sleeping was unusable because a poll loop generates no ingress. Whether
 Railway's sleep counts private-network traffic as a wake signal is **worth measuring** and is not
 documented clearly.
+
+### Railway's private network is IPv6-only
+
+`agent.railway.internal` resolves to an **AAAA** record. A server bound to `0.0.0.0` is IPv4-only,
+so it is invisible to every other service in the project **while looking perfectly healthy in its
+own logs** — it prints "listening", the platform reports the deploy SUCCESS, and the only evidence
+is `fetch failed` at the caller. `src/main.rs` binds `::` (dual-stack, which accepts IPv4-mapped
+connections too) and falls back to `0.0.0.0` with a log line saying it will not be reachable.
+
+This has no analogue on the Vercel arm, where a binding is resolved for you.
 
 ## Cost expectation
 
