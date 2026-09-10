@@ -80,6 +80,26 @@ sequentially stays sticky on both platforms, which is exactly why this would hav
 replica count is the property that makes it safe and Vercel's autoscaling is the property that
 breaks it.** Neither is better; they are answers to different questions.
 
+**A server-only push rebuilds everything on Vercel, and nothing at all on Railway.** Measured by
+changing one file (`services/agent-rs/src/main.rs`) and pushing:
+
+- **Vercel** auto-deployed, and rebuilt **both** services — `next build` ran for `web` even though
+  nothing under `web/` changed. One atomic deployment means one build of everything unless you add
+  a per-service `ignoreCommand`. The old code kept serving until the whole deployment was ready,
+  which is the atomicity doing its job: a mid-build probe returned the PREVIOUS build, not a
+  half-updated pair.
+- **Railway did nothing** — because `railway add --repo` sets a service's *source* but creates **no
+  repo trigger**. `repoTriggers` was empty on both services, so no push has ever deployed them; the
+  earlier deploys in this project all came from an explicit `railway service redeploy`. Neither
+  `railway add --repo` nor `railway service source connect` creates the trigger, which needs the
+  Railway GitHub App authorized on the repo — a browser action.
+
+So the CLI can build the entire Railway project except the one thing that makes it a *deployment*
+rather than a snapshot. That is worth knowing before trusting a scripted setup.
+
+**How you would even notice:** `/health` returns a `BUILD_MARKER` constant. A green checkmark says
+the platform finished; only something the new code produces says the change is what is answering.
+
 **Railway's private network is IPv6-only, and that failure is silent.** `agent.railway.internal`
 resolves to an AAAA record, so a server bound to `0.0.0.0` is invisible to every other service in
 the project while printing "listening" and passing the platform's own deploy check. The single
