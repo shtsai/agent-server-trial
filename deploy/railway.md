@@ -138,6 +138,38 @@ harder than it looks:
 - The batch paths that definitely work are the documented four: template deploys, applying staged
   changes **from the dashboard**, duplicating an environment, and PR environments.
 
+**Why ordering exists at all, when the industry says not to order deploys.** The received wisdom —
+Kubernetes refuses cross-service ordering outright, Compose's `depends_on` waits only for *running*
+and not *ready*, Railway's own staff say "make services resilient through retry logic" — is about
+**runtime liveness**, and it is right about that. Retries and health checks handle a dependency being
+DOWN, and ordering cannot, because it governs one moment and says nothing about the 3am restart.
+
+But there is a second failure class retries cannot touch, and it is the one this feature is for:
+**Railway resolves a reference variable only during a deployment, and a change to the referenced
+value does NOT redeploy the dependent service.** So a service that boots with a missing or stale
+address keeps it **for the life of the container**, and no amount of retrying fixes a wrong URL —
+it fails forever, politely. That is not hypothetical: the Vercel arm of this trial hit exactly this
+shape, where an empty `AGENT_SERVICE_URL` produced a container that was broken until it was
+redeployed.
+
+So the division is clean:
+
+| Failure | Fixed by |
+|---|---|
+| dependency is DOWN | retries, health checks, circuit breakers |
+| dependency's ADDRESS was wrong at boot | **ordering** — nothing at runtime re-reads it |
+
+The same split explains why ordering *is* mainstream where it belongs. ArgoCD **sync waves** and Helm
+hooks are widely used to put CRDs before the resources that use them and database migrations before
+the code that needs them — one-time state transitions, not service-to-service calls. And ArgoCD
+"will not advance to the next wave until all resources in the current wave are healthy", which is
+the detail that makes it useful rather than a `sleep`.
+
+**Which sets the bar for Railway's version: it is only as good as the dependency's health check.**
+Without `healthcheckPath`, "finished deploying" means "the container started" — Compose's
+`depends_on` problem exactly. With one, the gate becomes health-based and the ordering is worth
+having. `agent` in this repo has no `healthcheckPath`, so today it is the weak form.
+
 **And ordering is not compatibility.** It solves the ADDITIVE direction — `web` starts calling a new
 endpoint, so `agent` must be live first. It does nothing for a removal or a rename, because the
 window then contains a NEW `agent` and an OLD `web`, which is the same breakage from the other side.
