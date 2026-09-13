@@ -141,6 +141,15 @@ async fn main() {
     // the project while looking perfectly healthy in its own logs. A dual-stack `::` socket accepts
     // IPv4-mapped connections too on Linux, so this is strictly wider -- but fall back rather than
     // assume, since a host with bindv6only set would otherwise refuse to start at all.
+    // BIND_IPV4=1 forces the IPv4-only bind, so this repo can DEMONSTRATE the difference rather
+    // than assert it. Railway made private networking dual-stack for environments created after
+    // 2025-10-16; older ones are IPv6-only, and `::` is what works in both.
+    let want_v4 = std::env::var("BIND_IPV4").ok().is_some_and(|v| v == "1");
+    if want_v4 {
+        let l = tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("bind v4");
+        println!("[agent-rs {}] listening on 0.0.0.0:{port} (IPv4 ONLY, forced)", store.instance);
+        return serve(l, app, store).await;
+    }
     let listener = match tokio::net::TcpListener::bind(("::", port)).await {
         Ok(l) => {
             println!("[agent-rs {}] listening on [::]:{port} (dual-stack)", store.instance);
@@ -155,6 +164,10 @@ async fn main() {
         }
     };
 
+    serve(listener, app, store).await;
+}
+
+async fn serve(listener: tokio::net::TcpListener, app: Router, store: Arc<Store>) {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown(store))
         .await
