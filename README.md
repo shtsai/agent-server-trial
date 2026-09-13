@@ -119,11 +119,23 @@ environment, where `web` references `agent` and `agent` references `Postgres`:
  110s  all SUCCESS
 ```
 
-This is the case where ordering stops being academic: **`agent`'s pre-deploy migration needs the
-database to exist.** In a fresh environment, an unordered deploy would run the migration against a
-Postgres that is not up yet and fail the deployment. Ordered, the database is `SUCCESS` at 10s and
-the migration runs 80 seconds later against a live database — which is exactly what the fresh
-environment's logs show.
+**Read those numbers again before believing the obvious story about them.** The tempting claim —
+"`agent`'s migration needs the database, so ordering saved it" — is not supported here and was
+written into this file once before being caught. Postgres reached `SUCCESS` at **10s**; `agent` was
+still BUILDING until **90s**. The migration would have found a live database whether or not anything
+ordered it. **For the `agent`→`Postgres` edge the constraint never bound.** Only the `web`→`agent`
+edge did any work (QUEUED from 70s, released at 100s).
+
+That is the second time in this repo a measurement was read as proof of a mechanism that was never
+exercised — the same error, on the same feature, by the same author. The rule it keeps teaching:
+**a constraint that is not binding produces the identical trace whether or not the mechanism
+exists.** To actually test the database edge you would need a Postgres slower to become ready than
+the dependent is to build — a large restore against a cached image, not a fresh toy schema against a
+cold Rust compile.
+
+**The honest scope of ordering for a database edge is therefore narrow:** it is a safety net for the
+first boot of a new environment, and it does nothing on the push path, where Postgres is not
+redeployed at all and the migration runs against a database that has been live for days.
 
 **A database is optional, and the difference between having one and not is the experiment.**
 `DATABASE_URL` unset keeps runs in process memory; set persists them to Postgres. Both backends are
