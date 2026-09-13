@@ -107,6 +107,24 @@ web at 88s). That is the whole trade — Railway buys build time by giving up th
 (`/api/health` → `marker`, `/api/build` → `web`). A green checkmark says the platform finished; only
 something the new code produces says the change is what is answering.
 
+**With a database in the chain, a batch deploy orders all three — transitively.** Duplicating the
+environment, where `web` references `agent` and `agent` references `Postgres`:
+
+```
+   0s  Postgres=DEPLOYING  agent=BUILDING   web=BUILDING
+  10s  Postgres=SUCCESS    agent=BUILDING   web=BUILDING
+  70s  Postgres=SUCCESS    agent=BUILDING   web=QUEUED     web built, then waited
+  90s  Postgres=SUCCESS    agent=DEPLOYING  web=QUEUED
+ 100s  Postgres=SUCCESS    agent=SUCCESS    web=DEPLOYING  released when agent finished
+ 110s  all SUCCESS
+```
+
+This is the case where ordering stops being academic: **`agent`'s pre-deploy migration needs the
+database to exist.** In a fresh environment, an unordered deploy would run the migration against a
+Postgres that is not up yet and fail the deployment. Ordered, the database is `SUCCESS` at 10s and
+the migration runs 80 seconds later against a live database — which is exactly what the fresh
+environment's logs show.
+
 **A database is optional, and the difference between having one and not is the experiment.**
 `DATABASE_URL` unset keeps runs in process memory; set persists them to Postgres. Both backends are
 real. Measured on the Railway arm with a one-click Postgres on the private network:
