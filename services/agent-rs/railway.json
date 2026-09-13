@@ -4,5 +4,11 @@
     "builder": "DOCKERFILE",
     "dockerfilePath": "Dockerfile",
     "watchPatterns": ["services/agent-rs/**"]
+  },
+  "deploy": {
+    "preDeployCommand": "agent-rs --migrate",
+    "preDeployTimeoutSeconds": 120,
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 60
   }
 }
