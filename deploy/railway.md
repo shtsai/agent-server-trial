@@ -225,15 +225,33 @@ old worker arm, where sleeping was unusable because a poll loop generates no ing
 Railway's sleep counts private-network traffic as a wake signal is **worth measuring** and is not
 documented clearly.
 
-### Railway's private network is IPv6-only
+### Binding: `::`, and the IPv6 story is NOT what this repo first reported
 
-`agent.railway.internal` resolves to an **AAAA** record. A server bound to `0.0.0.0` is IPv4-only,
-so it is invisible to every other service in the project **while looking perfectly healthy in its
-own logs** — it prints "listening", the platform reports the deploy SUCCESS, and the only evidence
-is `fetch failed` at the caller. `src/main.rs` binds `::` (dual-stack, which accepts IPv4-mapped
-connections too) and falls back to `0.0.0.0` with a log line saying it will not be reachable.
+**Corrected 2026-09-13 by testing it.** This trial originally recorded that Railway's private
+network is IPv6-only and that a server bound to `0.0.0.0` is invisible to other services "while
+looking perfectly healthy in its own logs". That diagnosis was wrong for this project, and it was
+reached by changing two things at once.
 
-This has no analogue on the Vercel arm, where a binding is resolved for you.
+The original failure was `web` calling `agent.railway.internal:3001` while the agent had bound
+**8080**, because Railway injects `PORT` even into a service with no public domain. The fix pinned
+`PORT=3001` *and* switched the bind from `0.0.0.0` to `::` in the same change, and the success was
+attributed to the bind. **The port mismatch alone explains it.**
+
+Forcing the IPv4-only bind back on (`BIND_IPV4=1`, a switch this repo now carries so the claim can
+be demonstrated rather than asserted) settles it:
+
+```
+[agent-rs 05b7120c] listening on 0.0.0.0:3001 (IPv4 ONLY, forced)
+$ curl https://<web>/api/health   ->  200, served by 05b7120c
+```
+
+`web` reached it over the private network with no IPv6 listener at all. **Private networking here is
+dual-stack.** Railway made it so for every environment created after **2025-10-16**; environments
+older than that remain IPv6-only, which is where the widely-repeated advice comes from.
+
+**Bind `::` anyway** — Railway recommends it, it is correct in both new and legacy environments, and
+you cannot bind `::` and `0.0.0.0` simultaneously in a container. Just do not diagnose a
+private-network failure as an IPv6 problem before checking the port.
 
 ## Cost expectation
 

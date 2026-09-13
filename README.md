@@ -183,48 +183,17 @@ to wait, and the run was indistinguishable from no ordering at all. It was writt
 a negative result.** Making the dependency slower than the dependent is what converted it into a
 measurement.
 
-**Railway's private network is IPv6-only, and that failure is silent.** `agent.railway.internal`
-resolves to an AAAA record, so a server bound to `0.0.0.0` is invisible to every other service in
-the project while printing "listening" and passing the platform's own deploy check. The single
-symptom is `fetch failed` at the caller, one service away from the cause. Related and equally
-undocumented: **Railway injects `PORT=8080` into a service with no public domain** and does not list
-it among that service's variables — so the agent bound 8080 while `web` called 3001.
+**`PORT` is injected into a service with no public domain**, and is not listed among that service's
+variables — so the agent bound 8080 while `web` called 3001, and the only symptom was `fetch failed`
+one service away from the cause.
 
-**The topology is declared in the repo on one platform and held account-side on the other.**
-`vercel.json` declares both services, their roots and the binding between them, and Vercel reads it
-**at import time**, so a reviewer can read the deployment's shape out of the repo and a PR changes
-it. On Railway the same facts live in the account. Three things checked rather than assumed:
-
-- `railway.json` — the build config this repo commits — has **no `rootDirectory`** field (verified
-  against `railway.schema.json`; it carries `builder`, `dockerfilePath`, `watchPatterns`,
-  `startCommand` and nothing above them).
-- The **GraphQL API does**: `ServiceInstanceUpdateInput` exposes `rootDirectory`, `numReplicas`,
-  `sleepApplication` and `watchPatterns` (verified by introspecting
-  `backboard.railway.com/graphql/v2`). So it is scriptable — via `railway api` or the CLI — and
-  "you must click it" is wrong.
-- Railway is **actively shipping infrastructure-as-code** (`railway config` scaffolds
-  `.railway/railway.ts`), but the published `railway@2.0.17` npm package does not export the
-  `railway/iac` module that scaffold imports. So that path is not usable today and this whole
-  comparison is **time-stamped, not permanent**.
-
-The honest difference: on Vercel the service topology is a file the build reads; on Railway it is
-account state you can script but the build cannot see. Both platforms punished a missing or wrong
-value for the same thing with an error pointing somewhere else — Vercel with a URL parse error
-naming no service, Railway with a *Node* start-command error for a *Rust* service.
-
-**The two platforms are inverted on where configuration lives, and each is weak exactly where the
-other is strong.** Vercel declares the *topology* in the repo and has **no per-service environment
-variables at all** — `vercel env` is scoped to the project and to production/preview/development,
-the CLI has no `service` command (zero matches in `vercel --help`), and `vercel.json`'s service
-config has no `env` key (verified against `openapi.vercel.sh/vercel.json`). Railway is the mirror:
-the topology is account state, but **every variable belongs to one service**.
-
-That inversion is not trivia — it *is* why the two failures took the shape they did. A `PORT`
-variable set on the Vercel project reached both services because there was nowhere else to put it;
-on Railway the same variable could only ever have hit the service you set it on. Conversely
-Railway's missing Root Directory could not be caught by review, because no file in the repo states
-it. **Neither platform lets you review the whole deployment in one place**, they just fail on
-opposite halves.
+**A correction this repo had to make about itself:** that failure was originally written up as
+Railway's private network being IPv6-only, with `0.0.0.0` invisible to other services. The fix had
+changed two things at once — the port pin *and* an IPv6 bind — and credited the wrong one. Forcing
+the IPv4-only bind back on (`BIND_IPV4=1`) shows `web` reaching the agent perfectly over the private
+network with no IPv6 listener. **Private networking is dual-stack for environments created after
+2025-10-16**; only older ones are IPv6-only. Bind `::` anyway — it is correct in both — but do not
+diagnose a private-network failure as IPv6 before checking the port.
 
 **Both failures were caused by a file in this repo inviting the mistake**, not by the platforms:
 `.env.example` listed variables the platform is supposed to generate, and a root `package.json`
