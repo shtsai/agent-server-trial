@@ -177,6 +177,46 @@ For those, expand/contract is the only answer on any platform: teach `agent` bot
 `web`, then drop the old shape. Note also that neither platform protects the browser→`web` hop: a
 reader with the page already open is running old JavaScript against whatever the backend now is.
 
+## The database, and the migration gate
+
+`railway add --database postgres` provisions Postgres into the project's private network. Wire it
+with a **reference**, never a pasted connection string:
+
+```bash
+railway variable set 'DATABASE_URL=${{Postgres.DATABASE_URL}}' --service agent
+```
+
+That is the combination Railway is actually sold on — a process, a managed database, and private
+networking, in about ten minutes and with no VPC, IAM or load balancer. It is also the case where
+deploy ordering earns its keep: the database must exist before anything boots holding its address.
+
+**Migrations run in `preDeployCommand`**, which executes between build and deploy:
+
+```bash
+railway api 'mutation($e:String!,$s:String!,$i:ServiceInstanceUpdateInput!){serviceInstanceUpdate(environmentId:$e,serviceId:$s,input:$i)}' \
+  --raw-var e=$ENV --raw-var s=$AGENT \
+  --var i='{"preDeployCommand":"agent-rs --migrate","preDeployTimeoutSeconds":120}'
+```
+
+**Both directions verified.** Pointed at no database the migration exits non-zero, the deployment is
+marked `FAILED`, and the previous version keeps serving — Railway's docs say *"if your command
+fails, it will not be retried and the deployment will not proceed"*, and that is what happens. With
+the database wired it logs `schema applied` and the deploy proceeds. A gate never seen to fail is
+indistinguishable from no gate, which is why the failing arm was run first.
+
+**Two traps found while doing this:**
+
+- **`railway service redeploy` re-runs the PREVIOUS deployment**, including its configuration. A
+  newly set `preDeployCommand` did not run until a variable change forced a genuinely new
+  deployment. Redeploy is not how you apply a setting.
+- **`numReplicas` is stored immediately and takes effect on the next deployment.** Setting it to 2
+  changed nothing until something else triggered a deploy.
+
+And one behaviour worth knowing before trusting replicas: with `numReplicas: 2`, **two containers
+started but every one of 12 concurrent requests was served by the same instance.** `web`'s
+server-side fetch to `agent.railway.internal` reuses its connection, so internal DNS round-robin
+never gets a say. For an in-memory store that masks the replica hazard rather than fixing it.
+
 ## App sleeping
 
 `agent` has no public domain, so it has no inbound traffic of its own — but **it does receive

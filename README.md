@@ -107,6 +107,30 @@ web at 88s). That is the whole trade — Railway buys build time by giving up th
 (`/api/health` → `marker`, `/api/build` → `web`). A green checkmark says the platform finished; only
 something the new code produces says the change is what is answering.
 
+**A database is optional, and the difference between having one and not is the experiment.**
+`DATABASE_URL` unset keeps runs in process memory; set persists them to Postgres. Both backends are
+real. Measured on the Railway arm with a one-click Postgres on the private network:
+
+- **A run outlives the process that created it.** A run created by instance `610ee17a` was served in
+  full by `f7b46872` — a different process, two redeploys later. On the memory backend that same
+  read answers `lost`, which is the whole trade stated as one measurement.
+- **The migration gate works, and was verified in BOTH directions.** Railway's `preDeployCommand`
+  runs `agent-rs --migrate` between build and deploy. Pointed at no database it exits non-zero, the
+  **deployment FAILED, and the previous version kept serving** — verified, not assumed. With the
+  database wired it logs `schema applied` and the deploy proceeds. Vercel has no equivalent hook;
+  the convention there is to fold migrations into the build command, which runs before a deployment
+  is promoted and runs for every preview too.
+- **`railway service redeploy` re-runs the PREVIOUS deployment**, config and all. A newly set
+  `preDeployCommand` did not execute until something forced a genuinely new deployment (a variable
+  change). A redeploy is not a way to apply settings.
+- **Two replicas did not produce two answering instances.** `numReplicas: 2` started two containers
+  (two `Starting Container` lines) but all 12 concurrent requests were served by one — `web`'s
+  server-side fetch to `agent.railway.internal` reuses its connection, so internal DNS round-robin
+  never gets a say. That **masks** the in-memory replica hazard rather than removing it: it would
+  surface whenever a connection is re-established. With Postgres it stops mattering at all.
+- **`numReplicas` is stored immediately and applied only on the next deployment**, like every other
+  service setting here.
+
 **Railway orders dependent deploys — but only on a batch path, and only at the deploy step.**
 `web` referencing `${{agent.RAILWAY_PRIVATE_DOMAIN}}` is the dependency. Proven by duplicating the
 environment with `agent` deliberately slowed so the constraint had to bind:
