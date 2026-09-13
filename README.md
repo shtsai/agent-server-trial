@@ -66,13 +66,18 @@ browser.
 
 ## Findings so far
 
-**Vercel runs more than one container; Railway at one replica does not.** The same 8-concurrent
-`/api/health` sweep, both arms live, 2026-09-10:
+**Vercel fans out across containers under concurrency; Railway at one replica does not.** Measured
+twice, and **the ratio is not stable — which is itself the finding**:
 
 | | Vercel Services | Railway (`numReplicas: 1`) |
 |---|---|---|
-| 20 sequential calls | 1 container | 1 container |
-| **8 concurrent calls** | **split 6/2 across two** | **8/8 one container** |
+| 8 sequential | **1 container** | **1 container** |
+| 8 concurrent, 2026-09-10 | 2 containers (6/2) | 1 |
+| 8 concurrent, 2026-09-13 cold | **8 distinct containers** | 1 |
+| 8 concurrent, 2026-09-13 warm | 4 distinct containers | 1 |
+
+Quote the **shape**, not the number: sequential traffic pins to one container on both platforms;
+concurrent traffic fans out on Vercel and does not on Railway.
 
 A run created on one container and polled on the other answers `lost`. One browser polling
 sequentially stays sticky on both platforms, which is exactly why this would have shipped unnoticed
