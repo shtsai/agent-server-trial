@@ -75,8 +75,8 @@ async fn ask(http: &reqwest::Client, key: &str, prompt: &str) -> Result<(String,
 /// makes progress there is a question the marketing does not answer.
 pub async fn run(store: Arc<Store>, id: Uuid, question: String) {
     let Ok(key) = std::env::var("ANTHROPIC_API_KEY") else {
-        store.append(id, "error", "ANTHROPIC_API_KEY is not set".into());
-        store.finish(id, Status::Failed, None, Some("ANTHROPIC_API_KEY is not set".into()));
+        store.append(id, "error", "ANTHROPIC_API_KEY is not set".into()).await;
+        store.finish(id, Status::Failed, None, Some("ANTHROPIC_API_KEY is not set".into())).await;
         return;
     };
     let http = reqwest::Client::new();
@@ -100,23 +100,23 @@ pub async fn run(store: Arc<Store>, id: Uuid, question: String) {
         match ask(&http, &key, &prompt).await {
             Ok((text, truncated)) => {
                 if truncated {
-                    store.append(id, "note", "reply hit max_tokens".into());
+                    store.append(id, "note", "reply hit max_tokens".into()).await;
                 }
                 if i < STEPS {
                     notes.push(text.clone());
-                    store.append(id, "step", text);
+                    store.append(id, "step", text).await;
                 } else {
-                    store.append(id, "answer", text.clone());
-                    store.finish(id, Status::Done, Some(text), None);
+                    store.append(id, "answer", text.clone()).await;
+                    store.finish(id, Status::Done, Some(text), None).await;
                 }
             }
             Err(e) => {
-                store.append(id, "error", e.clone());
+                store.append(id, "error", e.clone()).await;
                 // Work already done is a PARTIAL. Never a silent success, never a bare failure --
                 // the caller has to be able to tell "it got two thirds of the way" from "it never
                 // started", because those need opposite work.
                 let status = if notes.is_empty() { Status::Failed } else { Status::Partial };
-                store.finish(id, status, None, Some(e));
+                store.finish(id, status, None, Some(e)).await;
                 return;
             }
         }

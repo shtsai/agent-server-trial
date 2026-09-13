@@ -1,22 +1,15 @@
-//! The run store. It is a `HashMap` behind a lock, and that is the whole design decision this
-//! trial turns on: with no database, a run exists only in the memory of the container that
-//! started it.
+//! The run store, in two backends chosen at boot by whether `DATABASE_URL` is set.
 //!
-//! Two properties follow, and both are load-bearing:
+//! **The point of keeping both is that the difference is the experiment.** In memory, a run exists
+//! only inside the container that started it: a refresh re-attaches, a restart destroys it, and a
+//! second replica cannot see it — so the design needs exactly one replica and tolerates losing work.
+//! In Postgres none of those hold, and the cost is a network hop and a thing to operate.
 //!
-//! 1. **A refresh loses nothing.** State is server-side and keyed by id, so a page that reloads
-//!    mid-run re-attaches to the same run. That is the property the database was carrying, and
-//!    it survives without one.
-//! 2. **Exactly one replica.** A second container has never heard of the first one's runs. That
-//!    fails only under concurrency, so it would read as an intermittent product bug rather than
-//!    as an architecture constraint -- which is why every response carries `instance`, and why a
-//!    poll that lands on the wrong container answers `lost` with a reason rather than a bare 404.
-//!
-//! What is deliberately NOT here: a claim predicate, an attempt counter, a stale-run requeue. All
-//! three exist to survive a worker dying, and nothing in memory survives that. Pretending
-//! otherwise with a retry counter would be the system lying about a guarantee it does not have.
+//! Both are real. Neither is a stub, because a stubbed backend would make every comparison between
+//! them a comparison of the stub.
 
 use serde::Serialize;
+use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -34,6 +27,22 @@ pub enum Status {
 }
 
 impl Status {
+    fn as_str(self) -> &'static str {
+        match self {
+            Status::Running => "running",
+            Status::Done => "done",
+            Status::Partial => "partial",
+            Status::Failed => "failed",
+        }
+    }
+    fn from_str(s: &str) -> Status {
+        match s {
+            "done" => Status::Done,
+            "partial" => Status::Partial,
+            "failed" => Status::Failed,
+            _ => Status::Running,
+        }
+    }
     fn is_terminal(self) -> bool {
         !matches!(self, Status::Running)
     }
@@ -41,22 +50,11 @@ impl Status {
 
 #[derive(Clone, Serialize)]
 pub struct Event {
-    pub seq: u32,
-    pub kind: &'static str, // step | note | error | answer
+    pub seq: i32,
+    pub kind: String, // step | note | error | answer
     pub payload: String,
 }
 
-pub struct Run {
-    pub question: String,
-    pub status: Status,
-    pub answer: Option<String>,
-    pub error: Option<String>,
-    pub events: Vec<Event>,
-    finished_at: Option<Instant>,
-}
-
-/// What a caller sees. Separate from `Run` so the internals (timers, the event vec) cannot leak
-/// into the wire shape by accident.
 #[derive(Serialize)]
 pub struct RunView {
     pub id: Uuid,
@@ -66,101 +64,204 @@ pub struct RunView {
     pub error: Option<String>,
 }
 
-/// How long a finished run stays readable. Without this the map is a leak with a nice name: a
-/// long-lived Railway container would accumulate every run it ever served.
+/// The schema. Applied by `agent-rs --migrate`, which the platform runs BEFORE the new version
+/// starts serving — so a failed migration blocks the deploy instead of shipping code against a
+/// database that cannot hold it.
+pub const SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS run (
+  id          uuid PRIMARY KEY,
+  question    text        NOT NULL,
+  status      text        NOT NULL,
+  answer      text,
+  error       text,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz
+);
+CREATE TABLE IF NOT EXISTS run_event (
+  run_id  uuid NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+  seq     int  NOT NULL,
+  kind    text NOT NULL,
+  payload text NOT NULL,
+  PRIMARY KEY (run_id, seq)
+);
+CREATE INDEX IF NOT EXISTS run_active ON run (status) WHERE status = 'running';
+"#;
+
+struct MemRun {
+    question: String,
+    status: Status,
+    answer: Option<String>,
+    error: Option<String>,
+    events: Vec<Event>,
+    finished_at: Option<Instant>,
+}
+
 const RETAIN: Duration = Duration::from_secs(30 * 60);
 
+enum Backend {
+    Memory(RwLock<HashMap<Uuid, MemRun>>),
+    Pg(PgPool),
+}
+
 pub struct Store {
-    runs: RwLock<HashMap<Uuid, Run>>,
-    /// Identifies this PROCESS, and it must not identify anything coarser. The point of it is to
-    /// catch a poll answered by a container that never saw the run, so anything shared between
-    /// replicas silently disables the detector -- and a detector that never fires is
-    /// indistinguishable from one that found nothing.
-    ///
-    /// `VERCEL_DEPLOYMENT_ID` was exactly that mistake: every replica of one deployment reports
-    /// the same value, which is the case being looked for. A random id per process is the only
-    /// thing that is right on every platform, so nothing is read from the environment.
+    backend: Backend,
+    /// Identifies this PROCESS and nothing coarser — a deployment id would be shared by every
+    /// replica, which is the case this exists to detect.
     pub instance: String,
 }
 
 impl Store {
-    pub fn new() -> Self {
-        Self {
-            runs: RwLock::new(HashMap::new()),
-            instance: Uuid::new_v4().to_string()[..8].to_string(),
-        }
-    }
+    /// Postgres when `DATABASE_URL` is set, memory otherwise. An UNSET variable is a deliberate
+    /// choice of backend; an EMPTY one is almost always a platform that failed to inject a value,
+    /// so it is treated as unset rather than as a connection string that cannot parse.
+    pub async fn open() -> Result<Self, String> {
+        let instance = Uuid::new_v4().to_string()[..8].to_string();
+        let url = std::env::var("DATABASE_URL").ok().filter(|u| !u.trim().is_empty());
 
-    pub fn create(&self, question: String) -> Uuid {
-        let id = Uuid::new_v4();
-        let mut runs = self.runs.write().unwrap();
-        runs.insert(
-            id,
-            Run {
-                question,
-                status: Status::Running,
-                answer: None,
-                error: None,
-                events: Vec::new(),
-                finished_at: None,
-            },
-        );
-        Self::sweep(&mut runs);
-        id
-    }
-
-    pub fn append(&self, id: Uuid, kind: &'static str, payload: String) {
-        if let Some(run) = self.runs.write().unwrap().get_mut(&id) {
-            let seq = run.events.len() as u32 + 1;
-            run.events.push(Event { seq, kind, payload });
-        }
-    }
-
-    pub fn finish(&self, id: Uuid, status: Status, answer: Option<String>, error: Option<String>) {
-        if let Some(run) = self.runs.write().unwrap().get_mut(&id) {
-            run.status = status;
-            if answer.is_some() {
-                run.answer = answer;
+        let backend = match url {
+            Some(url) => {
+                let pool = PgPoolOptions::new()
+                    .max_connections(5)
+                    .acquire_timeout(Duration::from_secs(10))
+                    .connect(&url)
+                    .await
+                    .map_err(|e| format!("postgres connect failed: {e}"))?;
+                Backend::Pg(pool)
             }
-            run.error = error;
-            run.finished_at = Some(Instant::now());
+            None => Backend::Memory(RwLock::new(HashMap::new())),
+        };
+        Ok(Self { backend, instance })
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self.backend {
+            Backend::Memory(_) => "memory",
+            Backend::Pg(_) => "postgres",
         }
     }
 
-    /// Events strictly after `after_seq`, so a poller never re-renders what it already has and a
-    /// page that arrives mid-run gets the whole log by asking from 0.
-    pub fn read(&self, id: Uuid, after_seq: u32) -> Option<(RunView, Vec<Event>)> {
-        let runs = self.runs.read().unwrap();
-        let run = runs.get(&id)?;
-        Some((
-            RunView {
-                id,
-                question: run.question.clone(),
-                status: run.status,
-                answer: run.answer.clone(),
-                error: run.error.clone(),
-            },
-            run.events.iter().filter(|e| e.seq > after_seq).cloned().collect(),
-        ))
+    pub async fn migrate(&self) -> Result<(), String> {
+        match &self.backend {
+            Backend::Pg(pool) => sqlx::raw_sql(SCHEMA)
+                .execute(pool)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("migrate failed: {e}")),
+            Backend::Memory(_) => Err("--migrate requires DATABASE_URL".into()),
+        }
     }
 
-    pub fn len(&self) -> usize {
-        self.runs.read().unwrap().len()
+    pub async fn create(&self, question: String) -> Result<Uuid, String> {
+        let id = Uuid::new_v4();
+        match &self.backend {
+            Backend::Memory(m) => {
+                let mut runs = m.write().unwrap();
+                runs.insert(id, MemRun { question, status: Status::Running, answer: None,
+                                         error: None, events: Vec::new(), finished_at: None });
+                let now = Instant::now();
+                runs.retain(|_, r| r.finished_at.is_none_or(|t| now.duration_since(t) < RETAIN));
+            }
+            Backend::Pg(pool) => {
+                sqlx::query("INSERT INTO run (id, question, status) VALUES ($1, $2, 'running')")
+                    .bind(id).bind(&question)
+                    .execute(pool).await
+                    .map_err(|e| format!("insert run: {e}"))?;
+            }
+        }
+        Ok(id)
     }
 
-    fn sweep(runs: &mut HashMap<Uuid, Run>) {
-        let now = Instant::now();
-        runs.retain(|_, r| match r.finished_at {
-            Some(t) => now.duration_since(t) < RETAIN,
-            None => true,
-        });
+    pub async fn append(&self, id: Uuid, kind: &str, payload: String) {
+        match &self.backend {
+            Backend::Memory(m) => {
+                if let Some(run) = m.write().unwrap().get_mut(&id) {
+                    let seq = run.events.len() as i32 + 1;
+                    run.events.push(Event { seq, kind: kind.into(), payload });
+                }
+            }
+            Backend::Pg(pool) => {
+                // The sequence is derived inside the INSERT, so two writers cannot both read the
+                // same max and then collide -- the primary key would reject the loser anyway, but
+                // computing it in the statement means there is no read-then-write window at all.
+                let q = "INSERT INTO run_event (run_id, seq, kind, payload)
+                         SELECT $1, COALESCE(MAX(seq), 0) + 1, $2, $3 FROM run_event WHERE run_id = $1";
+                if let Err(e) = sqlx::query(q).bind(id).bind(kind).bind(&payload).execute(pool).await {
+                    eprintln!("[store] append failed for {id}: {e}");
+                }
+            }
+        }
     }
-}
 
-impl Store {
-    /// Runs still working. This is what a `kill -9` destroys, and the only honest way to see
-    /// whether a platform is letting detached work run between requests.
-    pub fn active(&self) -> usize {
-        self.runs.read().unwrap().values().filter(|r| !r.status.is_terminal()).count()
+    pub async fn finish(&self, id: Uuid, status: Status, answer: Option<String>, error: Option<String>) {
+        match &self.backend {
+            Backend::Memory(m) => {
+                if let Some(run) = m.write().unwrap().get_mut(&id) {
+                    run.status = status;
+                    if answer.is_some() { run.answer = answer; }
+                    run.error = error;
+                    run.finished_at = Some(Instant::now());
+                }
+            }
+            Backend::Pg(pool) => {
+                let q = "UPDATE run SET status = $2, answer = COALESCE($3, answer),
+                                error = $4, finished_at = now() WHERE id = $1";
+                if let Err(e) = sqlx::query(q).bind(id).bind(status.as_str())
+                    .bind(&answer).bind(&error).execute(pool).await {
+                    eprintln!("[store] finish failed for {id}: {e}");
+                }
+            }
+        }
+    }
+
+    pub async fn read(&self, id: Uuid, after_seq: i32) -> Option<(RunView, Vec<Event>)> {
+        match &self.backend {
+            Backend::Memory(m) => {
+                let runs = m.read().unwrap();
+                let run = runs.get(&id)?;
+                Some((
+                    RunView { id, question: run.question.clone(), status: run.status,
+                              answer: run.answer.clone(), error: run.error.clone() },
+                    run.events.iter().filter(|e| e.seq > after_seq).cloned().collect(),
+                ))
+            }
+            Backend::Pg(pool) => {
+                let row = sqlx::query("SELECT question, status, answer, error FROM run WHERE id = $1")
+                    .bind(id).fetch_optional(pool).await.ok().flatten()?;
+                let view = RunView {
+                    id,
+                    question: row.try_get::<String, _>("question").ok()?,
+                    status: Status::from_str(&row.try_get::<String, _>("status").ok()?),
+                    answer: row.try_get("answer").ok(),
+                    error: row.try_get("error").ok(),
+                };
+                let events = sqlx::query(
+                    "SELECT seq, kind, payload FROM run_event WHERE run_id = $1 AND seq > $2 ORDER BY seq")
+                    .bind(id).bind(after_seq).fetch_all(pool).await.unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|r| Some(Event {
+                        seq: r.try_get("seq").ok()?,
+                        kind: r.try_get("kind").ok()?,
+                        payload: r.try_get("payload").ok()?,
+                    }))
+                    .collect();
+                Some((view, events))
+            }
+        }
+    }
+
+    pub async fn counts(&self) -> (i64, i64) {
+        match &self.backend {
+            Backend::Memory(m) => {
+                let runs = m.read().unwrap();
+                (runs.len() as i64, runs.values().filter(|r| !r.status.is_terminal()).count() as i64)
+            }
+            Backend::Pg(pool) => {
+                let q = "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status = 'running') AS active FROM run";
+                match sqlx::query(q).fetch_one(pool).await {
+                    Ok(r) => (r.try_get("total").unwrap_or(0), r.try_get("active").unwrap_or(0)),
+                    Err(_) => (0, 0),
+                }
+            }
+        }
     }
 }

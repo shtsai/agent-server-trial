@@ -30,7 +30,7 @@ struct CreateBody {
 #[derive(Deserialize)]
 struct ReadQuery {
     #[serde(default)]
-    after: u32,
+    after: i32,
 }
 
 async fn create(
@@ -45,7 +45,10 @@ async fn create(
         );
     }
 
-    let id = store.create(question.clone());
+    let id = match store.create(question.clone()).await {
+        Ok(id) => id,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))),
+    };
     // Detached: the reply is the run's ID, never its answer. A reply computed before the work it
     // describes would be a plan wearing a receipt's clothing.
     tokio::spawn(agent::run(store.clone(), id, question));
@@ -61,7 +64,7 @@ async fn read(
     Path(id): Path<Uuid>,
     Query(q): Query<ReadQuery>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    match store.read(id, q.after) {
+    match store.read(id, q.after).await {
         Some((run, events)) => (
             StatusCode::OK,
             Json(json!({ "instance": store.instance, "run": run, "events": events })),
@@ -86,23 +89,41 @@ async fn read(
 /// Bumped by hand to prove WHICH build is serving. A deploy is only observable if something the
 /// new code produces is visible from outside it — a green checkmark says the platform finished,
 /// not that the thing you changed is what answers.
-const BUILD_MARKER: &str = "exp-3-both";
+const BUILD_MARKER: &str = "db-1";
 
 async fn health(State(store): State<Arc<Store>>) -> Json<serde_json::Value> {
+    let (runs, active) = store.counts().await;
     Json(json!({
         "ok": true,
         "marker": BUILD_MARKER,
         "instance": store.instance,
-        "runs": store.len(),
+        // Which backend answered. A run's durability is entirely a property of this value, so it
+        // belongs on the surface rather than in a deploy log nobody reads.
+        "store": store.kind(),
+        "runs": runs,
         // The number that answers "does detached background work progress between requests on
         // this platform?" -- poll it while nothing else is happening and watch it fall to zero.
-        "active": store.active(),
+        "active": active,
     }))
 }
 
 #[tokio::main]
 async fn main() {
-    let store = Arc::new(Store::new());
+    let store = match Store::open().await {
+        Ok(s) => Arc::new(s),
+        Err(e) => { eprintln!("[agent-rs] {e}"); std::process::exit(1); }
+    };
+
+    // `--migrate` applies the schema and exits. It is a SEPARATE invocation, not something the
+    // server does on boot: the platform runs it between build and deploy, so a schema that cannot
+    // be applied stops the deployment instead of starting a version the database cannot serve.
+    if std::env::args().any(|a| a == "--migrate") {
+        match store.migrate().await {
+            Ok(()) => { println!("[agent-rs] schema applied"); return; }
+            Err(e) => { eprintln!("[agent-rs] {e}"); std::process::exit(1); }
+        }
+    }
+    println!("[agent-rs {}] store backend: {}", store.instance, store.kind());
     let app = Router::new()
         .route("/runs", post(create))
         .route("/runs/{id}", get(read))
@@ -157,6 +178,7 @@ async fn shutdown(store: Arc<Store>) {
     #[cfg(not(unix))]
     let _ = ctrl_c.await;
 
-    let active = store.active();
-    println!("[agent-rs {}] shutting down, {active} run(s) in flight will be LOST", store.instance);
+    let (_, active) = store.counts().await;
+    let fate = if store.kind() == "postgres" { "survive in postgres" } else { "be LOST" };
+    println!("[agent-rs {}] shutting down, {active} run(s) in flight will {fate}", store.instance);
 }
