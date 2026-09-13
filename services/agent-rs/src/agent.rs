@@ -76,7 +76,7 @@ async fn ask(http: &reqwest::Client, key: &str, prompt: &str) -> Result<(String,
 pub async fn run(store: Arc<Store>, id: Uuid, question: String) {
     let Ok(key) = std::env::var("ANTHROPIC_API_KEY") else {
         store.append(id, "error", "ANTHROPIC_API_KEY is not set".into()).await;
-        store.finish(id, Status::Failed, None, Some("ANTHROPIC_API_KEY is not set".into())).await;
+        store.finish(id, Status::Failed, None, Some("ANTHROPIC_API_KEY is not set".into()), None).await;
         return;
     };
     let http = reqwest::Client::new();
@@ -107,7 +107,7 @@ pub async fn run(store: Arc<Store>, id: Uuid, question: String) {
                     store.append(id, "step", text).await;
                 } else {
                     store.append(id, "answer", text.clone()).await;
-                    store.finish(id, Status::Done, Some(text), None).await;
+                    store.finish(id, Status::Done, Some(text), None, Some(MODEL)).await;
                 }
             }
             Err(e) => {
@@ -116,7 +116,7 @@ pub async fn run(store: Arc<Store>, id: Uuid, question: String) {
                 // the caller has to be able to tell "it got two thirds of the way" from "it never
                 // started", because those need opposite work.
                 let status = if notes.is_empty() { Status::Failed } else { Status::Partial };
-                store.finish(id, status, None, Some(e)).await;
+                store.finish(id, status, None, Some(e), Some(MODEL)).await;
                 return;
             }
         }

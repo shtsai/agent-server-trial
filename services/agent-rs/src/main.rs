@@ -89,7 +89,7 @@ async fn read(
 /// Bumped by hand to prove WHICH build is serving. A deploy is only observable if something the
 /// new code produces is visible from outside it — a green checkmark says the platform finished,
 /// not that the thing you changed is what answers.
-const BUILD_MARKER: &str = "db-1";
+const BUILD_MARKER: &str = "db-2-schema-and-code";
 
 async fn health(State(store): State<Arc<Store>>) -> Json<serde_json::Value> {
     let (runs, active) = store.counts().await;

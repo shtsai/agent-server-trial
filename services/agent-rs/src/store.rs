@@ -62,6 +62,9 @@ pub struct RunView {
     pub status: Status,
     pub answer: Option<String>,
     pub error: Option<String>,
+    /// Which model produced the answer. Added in the same change as the column that holds it, so
+    /// this field is the observable proof that the migration ran before the code that reads it.
+    pub model: Option<String>,
 }
 
 /// The schema. Applied by `agent-rs --migrate`, which the platform runs BEFORE the new version
@@ -85,6 +88,12 @@ CREATE TABLE IF NOT EXISTS run_event (
   PRIMARY KEY (run_id, seq)
 );
 CREATE INDEX IF NOT EXISTS run_active ON run (status) WHERE status = 'running';
+
+-- Added after `run` already existed in production, which CREATE TABLE IF NOT EXISTS cannot express:
+-- it only ever builds a FRESH table, so a new column would appear on empty databases and nowhere
+-- else. An explicit ALTER is the whole reason this schema needs a migrate STEP rather than being
+-- applied on connect.
+ALTER TABLE run ADD COLUMN IF NOT EXISTS model text;
 "#;
 
 struct MemRun {
@@ -92,6 +101,7 @@ struct MemRun {
     status: Status,
     answer: Option<String>,
     error: Option<String>,
+    model: Option<String>,
     events: Vec<Event>,
     finished_at: Option<Instant>,
 }
@@ -156,8 +166,8 @@ impl Store {
         match &self.backend {
             Backend::Memory(m) => {
                 let mut runs = m.write().unwrap();
-                runs.insert(id, MemRun { question, status: Status::Running, answer: None,
-                                         error: None, events: Vec::new(), finished_at: None });
+                runs.insert(id, MemRun { question, status: Status::Running, answer: None, error: None,
+                                         model: None, events: Vec::new(), finished_at: None });
                 let now = Instant::now();
                 runs.retain(|_, r| r.finished_at.is_none_or(|t| now.duration_since(t) < RETAIN));
             }
@@ -192,21 +202,23 @@ impl Store {
         }
     }
 
-    pub async fn finish(&self, id: Uuid, status: Status, answer: Option<String>, error: Option<String>) {
+    pub async fn finish(&self, id: Uuid, status: Status, answer: Option<String>,
+                        error: Option<String>, model: Option<&str>) {
         match &self.backend {
             Backend::Memory(m) => {
                 if let Some(run) = m.write().unwrap().get_mut(&id) {
                     run.status = status;
                     if answer.is_some() { run.answer = answer; }
                     run.error = error;
+                    run.model = model.map(str::to_string);
                     run.finished_at = Some(Instant::now());
                 }
             }
             Backend::Pg(pool) => {
                 let q = "UPDATE run SET status = $2, answer = COALESCE($3, answer),
-                                error = $4, finished_at = now() WHERE id = $1";
+                                error = $4, model = $5, finished_at = now() WHERE id = $1";
                 if let Err(e) = sqlx::query(q).bind(id).bind(status.as_str())
-                    .bind(&answer).bind(&error).execute(pool).await {
+                    .bind(&answer).bind(&error).bind(model).execute(pool).await {
                     eprintln!("[store] finish failed for {id}: {e}");
                 }
             }
@@ -220,12 +232,13 @@ impl Store {
                 let run = runs.get(&id)?;
                 Some((
                     RunView { id, question: run.question.clone(), status: run.status,
-                              answer: run.answer.clone(), error: run.error.clone() },
+                              answer: run.answer.clone(), error: run.error.clone(),
+                              model: run.model.clone() },
                     run.events.iter().filter(|e| e.seq > after_seq).cloned().collect(),
                 ))
             }
             Backend::Pg(pool) => {
-                let row = sqlx::query("SELECT question, status, answer, error FROM run WHERE id = $1")
+                let row = sqlx::query("SELECT question, status, answer, error, model FROM run WHERE id = $1")
                     .bind(id).fetch_optional(pool).await.ok().flatten()?;
                 let view = RunView {
                     id,
@@ -233,6 +246,7 @@ impl Store {
                     status: Status::from_str(&row.try_get::<String, _>("status").ok()?),
                     answer: row.try_get("answer").ok(),
                     error: row.try_get("error").ok(),
+                    model: row.try_get("model").ok(),
                 };
                 let events = sqlx::query(
                     "SELECT seq, kind, payload FROM run_event WHERE run_id = $1 AND seq > $2 ORDER BY seq")
