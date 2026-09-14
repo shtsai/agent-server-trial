@@ -1,0 +1,7 @@
+{
+  "name": "agent-server-trial-iac",
+  "private": true,
+  "description": "This root manifest exists ONLY so the Railway IaC SDK can be imported by .railway/railway.ts. It is not an application, and nothing deploys from the repo root. Earlier in this trial a root package.json caused Railway's builder to autodetect the repo root as a Node app and fail with 'No start command detected' -- a Node error for a Rust service. IaC declares each service's rootDirectory explicitly, which is what makes this safe to reintroduce.",
+  "engines": { "node": ">=22" },
+  "dependencies": { "railway": "^3.11.0" }
+}
