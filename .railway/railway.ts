@@ -10,7 +10,7 @@
 //
 // Secrets stay in the control plane. `preserve()` keeps the value that is already set without
 // printing it into the repo.
-import { defineRailway, github, postgres, preserve, project, ref, service, template, volume } from "railway/iac";
+import { defineRailway, github, postgres, preserve, project, ref, service, volume } from "railway/iac";
 
 const REPO = "shtsai/agent-server-trial";
 
@@ -59,8 +59,17 @@ export default defineRailway(() => {
     build: { buildEnvironment: "V3", builder: "RAILPACK", watchPatterns: ["web/**"] },
     replicas: { "us-west2": 1 },
     env: {
-      AGENT_SERVICE_URL: template`http://${ref(agent, "RAILWAY_PRIVATE_DOMAIN")}:3001`,
-      STATS_SERVICE_URL: template`http://${ref(stats, "RAILWAY_PRIVATE_DOMAIN")}:3002`,
+      // A reference can only ever be a WHOLE value -- `VariableValue` has literal / reference /
+      // sharedReference / preserve / raw and no composition form -- so a URL that wraps a
+      // reference in a scheme and a port must be a literal carrying Railway's own `${{...}}`
+      // syntax, which Railway parses out of the value and which still registers the edge.
+      //
+      // `template` is NOT a string tag: it is `template(name, options): SourceConfig`, a sibling of
+      // github() and image() for deploying a Railway template. Used as a tagged literal it type-
+      // checks, silently yields just the reference, and drops the scheme and port -- which took
+      // this deployment down until the frontend's own guard reported "no http(s) scheme".
+      AGENT_SERVICE_URL: "http://${{agent.RAILWAY_PRIVATE_DOMAIN}}:3001",
+      STATS_SERVICE_URL: "http://${{stats.RAILWAY_PRIVATE_DOMAIN}}:3002",
     },
   });
 
