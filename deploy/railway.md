@@ -36,22 +36,30 @@ no manifest of any kind (a `Makefile` drives local dev instead) precisely so thi
 again — but the underlying constraint is permanent, and it is a real difference between the two
 platforms in this trial:
 
-> **Railway's `railway.json` has no `rootDirectory` field** — verified against
-> `railway.schema.json`, which exposes `builder`, `dockerfilePath`, `watchPatterns` and
-> `startCommand` and nothing above them. **The build config the repo commits cannot say which
-> directory the service builds from.**
+> **Superseded 2026-09-14 — read this before the paragraphs below.** Railway now has full
+> infrastructure-as-code (`.railway/railway.ts`, **generally available** for TypeScript), and its
+> docs call `railway.json`/`railway.toml` — what this repo uses — **deprecated**. The IaC module
+> *can* express the whole topology: `ServiceSource.rootDirectory`, plus `variables`, `build`,
+> `deploy`, `networking`, `replicaConfig`, and `postgres`/`mysql`/`redis`/`mongo`/`volume` as
+> first-class resources with a `ref` helper for references.
 >
-> It is *not* dashboard-only, though: the GraphQL API's `ServiceInstanceUpdateInput` exposes
-> `rootDirectory` (and `numReplicas`, `sleepApplication`, `watchPatterns`) — verified by
-> introspecting `backboard.railway.com/graphql/v2` — so it is scriptable through `railway api`.
-> Railway is also shipping IaC (`railway config` → `.railway/railway.ts`), but the published
-> `railway@2.0.17` package does not export the `railway/iac` module that file imports, so that
-> path does not work yet. **Treat this paragraph as dated.**
+> **This trial concluded the opposite, and the reason is worth more than the conclusion.**
+> `npm install railway` on the machine running the trial resolved to **2.0.17**, which has no `iac`
+> module — because the current **3.11.0 declares `engines: { node: ">=22" }`** and the machine had
+> Node 20. npm silently installed the last major that fit. The import failing was then read as
+> "Railway has not shipped this yet" rather than "this environment cannot install it".
 >
-> The difference from Vercel that survives all of that: `vercel.json` is read **at import time**,
-> so the topology is a reviewable file the build itself consumes. Railway's equivalent is account
-> state — scriptable, but invisible to the repo, so a cloned environment reproduces it only if
-> someone re-runs the script.
+> **A silent major-version downgrade from an engines constraint makes a GA feature look unshipped.**
+> If a documented module will not import, check the installed version against `npm view <pkg> version`
+> before concluding anything about the vendor.
+
+What follows describes the **deprecated** `railway.json` path, which is what this repo still uses.
+
+> `railway.json` has no `rootDirectory` field — verified against `railway.schema.json`, which
+> exposes `builder`, `dockerfilePath`, `watchPatterns` and `startCommand` and nothing above them.
+> It also has no variables key. On that path the topology is account state, scriptable through the
+> GraphQL API (`ServiceInstanceUpdateInput` carries `rootDirectory`, `numReplicas`,
+> `sleepApplication`, `watchPatterns`) but invisible to the repo.
 
 `railway.json` is committed per service for everything it *can* carry (builder, Dockerfile path,
 watch patterns). Root Directory is the one thing it cannot, so it stays step 2.
