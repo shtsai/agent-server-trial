@@ -66,6 +66,23 @@ browser.
 
 ## Findings so far
 
+**Retracted 2026-09-14 — Railway's topology CAN live in the repo.** For most of this trial the
+finding was that it could not: `railway.json` has no `rootDirectory` and no variables key, so which
+directory a service builds from was account state only. **That describes the path Railway now calls
+deprecated.** Its infrastructure-as-code (`.railway/railway.ts`) is **generally available** for
+TypeScript and expresses the whole topology — `ServiceSource.rootDirectory`, `variables`, `build`,
+`deploy`, `networking`, `replicaConfig`, and `postgres`/`mysql`/`redis`/`mongo`/`volume` as
+first-class resources with a `ref` helper. This repo has **not** migrated and still uses the
+deprecated file.
+
+Why the trial got it wrong is the transferable part: `npm install railway` resolved to **2.0.17**,
+which ships no `iac` module, because the current **3.11.0 declares `engines: { node: ">=22" }`** and
+the machine ran Node 20. npm silently installed the last major that fit, the documented import
+failed, and that was read as *the vendor has not shipped this* rather than *this environment cannot
+install it*. **A silent major-version downgrade makes a GA feature look unshipped** — check the
+installed version against `npm view <pkg> version` before concluding anything about a vendor.
+
+
 **Vercel fans out across containers under concurrency; Railway at one replica does not.** Measured
 twice, and **the ratio is not stable — which is itself the finding**:
 
