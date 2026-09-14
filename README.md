@@ -66,6 +66,33 @@ browser.
 
 ## Findings so far
 
+**Ordering waits for EVERY dependency, not the first one.** Re-run 2026-09-14 after adding a third
+service, making the graph a diamond — a database at the bottom, a Rust service and a TypeScript
+service both referencing it, a frontend referencing both — with the *faster* mid-tier service
+deliberately slowed so the constraint had to bind:
+
+```
+  10s  db=SUCCESS   rust=BUILDING   ts=BUILDING    web=BUILDING
+ 140s  db=SUCCESS   rust=SUCCESS    ts=BUILDING    web=QUEUED     ← web built; rust already done
+ 200s  db=SUCCESS   rust=SUCCESS    ts=DEPLOYING   web=QUEUED     ← still waiting, 60s later
+ 210s  db=SUCCESS   rust=SUCCESS    ts=SUCCESS     web=DEPLOYING  ← released by the SLOWER one
+```
+
+`web` sat `QUEUED` for **70 seconds after one of its two dependencies had finished**, released only
+when the slower one did. Two things this also settles: **sibling services with no edge between them
+build and deploy in parallel** (the Rust and TypeScript services never waited for each other), and
+the edge is registered by the **`${{...}}` syntax in the value**, not by which helper wrote it —
+`web`'s dependencies are plain literals containing `${{service.VAR}}`, and they ordered exactly like
+`ref()` calls do.
+
+**And the database edge still never bound**, for the third time: the database was `SUCCESS` at 10s
+while both consumers built until 130s+. Ordering for a database is a first-boot safety net, not
+something that does daily work.
+
+**Watch paths hold with three services.** A change to only the TypeScript service redeployed only
+it; the other two services' deployment ids were untouched.
+
+
 **Retracted 2026-09-14 — Railway's topology CAN live in the repo.** For most of this trial the
 finding was that it could not: `railway.json` has no `rootDirectory` and no variables key, so which
 directory a service builds from was account state only. **That describes the path Railway now calls
