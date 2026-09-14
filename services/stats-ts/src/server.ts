@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 
 const INSTANCE = randomUUID().slice(0, 8);
+const BUILD_MARKER = "stats-exp-1";
 const PORT = Number(process.env.PORT ?? 3002);
 
 // Same rule the Rust service learned: an EMPTY value is what a platform that failed to inject one
@@ -41,7 +42,7 @@ createServer(async (req, res) => {
     res.end(JSON.stringify(body));
   };
   try {
-    if (path === "/health") return send(200, { ok: true, instance: INSTANCE, db: Boolean(pool) });
+    if (path === "/health") return send(200, { ok: true, instance: INSTANCE, marker: BUILD_MARKER, db: Boolean(pool) });
     if (path === "/stats") return send(200, { instance: INSTANCE, ...(await stats()) });
     send(404, { error: "not found" });
   } catch (err) {
